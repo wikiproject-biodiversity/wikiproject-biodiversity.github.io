@@ -1,1 +1,104 @@
-<a href = "./iNaturalistWikiprojectBiodivBook/_build/html/">Missing Wikipedia articles from iNaturalist observations by Wikiproject Biodiversity</a> 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Tools, bots and lists built for the Wikidata WikiProject Biodiversity — connecting GBIF, iNaturalist, Plazi and Wikidata to describe and illustrate more taxa on Wikipedia and Wikimedia Commons.">
+  <title>WikiProject Biodiversity — tools &amp; contributions</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6;
+           max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; color: #1c1c1c; }
+    @media (prefers-color-scheme: dark) { body { background: #161616; color: #e6e6e6; } a { color: #6db3f2; } }
+    h1 { font-size: 1.7rem; margin: 0 0 0.25rem; }
+    h2 { font-size: 1.15rem; margin: 2rem 0 0.75rem; padding-bottom: 0.3rem; border-bottom: 1px solid #8883; }
+    p.lead { color: #555; margin-top: 0; }
+    @media (prefers-color-scheme: dark) { p.lead { color: #aaa; } }
+    a { color: #185fa5; }
+    ul.cards { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.75rem;
+               grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+    li.card { border: 1px solid #8884; border-radius: 10px; padding: 0.85rem 1rem; }
+    li.card h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+    li.card p { margin: 0 0 0.5rem; font-size: 0.9rem; color: #555; }
+    @media (prefers-color-scheme: dark) { li.card p { color: #aaa; } }
+    li.card .links { font-size: 0.85rem; }
+    li.card .links a { margin-right: 0.6rem; white-space: nowrap; }
+    footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #8883; font-size: 0.9rem; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>WikiProject Biodiversity</h1>
+  <p class="lead">Tools, bots and lists that connect
+    <a href="https://gbif.org">GBIF</a>, <a href="https://www.inaturalist.org/projects/wikiproject-biodiversity">iNaturalist</a>,
+    <a href="https://plazi.org">Plazi</a> and <a href="https://www.wikidata.org/wiki/Wikidata:WikiProject_Biodiversity">Wikidata</a>
+    to describe and illustrate more taxa on Wikipedia and Wikimedia Commons.</p>
+
+  <h2>Tools &amp; apps</h2>
+  <ul class="cards">
+    <li class="card">
+      <h3>Tarsier</h3>
+      <p>Find openly-licensed, reusable images of any taxon — across GBIF and the taxonomic literature (Plazi / BLR) — and upload them to Wikimedia Commons in one click.</p>
+      <div class="links">
+        <a href="https://andrawaag.github.io/tarsier/">Open ↗</a>
+        <a href="https://github.com/andrawaag/andrawaag.github.io/tree/main/tarsier">Source</a>
+      </div>
+    </li>
+    <li class="card">
+      <h3>iNotWiki</h3>
+      <p>Command-line tool that finds taxa <strong>missing a Wikipedia article</strong> by cross-referencing iNaturalist observations with Wikidata.</p>
+      <div class="links">
+        <a href="https://github.com/wikiproject-biodiversity/iNotListed">GitHub</a>
+        <a href="https://codeberg.org/wikiproject-biodiversity/iNotListed">Codeberg</a>
+      </div>
+    </li>
+    <li class="card">
+      <h3>Taxon-name stub maker</h3>
+      <p>Interactive notebook (Voilà / Binder) that guides an editor through drafting an English Wikipedia stub for a taxon from extracted sources.</p>
+      <div class="links">
+        <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker">GitHub</a>
+        <a href="https://mybinder.org/v2/gh/wikiproject-biodiversity/taxonname-wpstubmaker/HEAD?urlpath=%2Fvoila%2Frender%2Fstub_maker%2520(1).ipynb">Launch ↗</a>
+      </div>
+    </li>
+  </ul>
+
+  <h2>Bots — keeping Wikidata in sync</h2>
+  <ul class="cards">
+    <li class="card">
+      <h3>treatmentbot</h3>
+      <p>Synchronises Plazi <a href="https://treatment.plazi.org">TreatmentBank</a> taxonomic treatments with Wikidata.</p>
+      <div class="links"><a href="https://github.com/wikiproject-biodiversity/treatmentbot">GitHub</a></div>
+    </li>
+    <li class="card">
+      <h3>sync_common_names</h3>
+      <p>Synchronises structurally-stored common (vernacular) names with Wikidata.</p>
+      <div class="links"><a href="https://github.com/wikiproject-biodiversity/sync_common_names">GitHub</a></div>
+    </li>
+  </ul>
+
+  <h2>Missing Wikipedia articles — observation lists</h2>
+  <p class="lead">Jupyter Books listing iNaturalist observations of taxa that do not yet have an English Wikipedia article.</p>
+  <ul class="cards">
+    <li class="card">
+      <h3>WikiProject Biodiversity participants</h3>
+      <p>Observations from participants in the iNaturalist WikiProject Biodiversity project.</p>
+      <div class="links"><a href="https://github.com/wikiproject-biodiversity/wikiproject-biodiversity.github.io/tree/master/iNaturalistWikiprojectBiodivBook">Source</a></div>
+    </li>
+    <li class="card">
+      <h3>Bumblebees (Bombus)</h3>
+      <p>Bumblebee species observed on iNaturalist that lack a Wikipedia article.</p>
+      <div class="links"><a href="https://github.com/wikiproject-biodiversity/wikiproject-biodiversity.github.io/tree/master/BombusBook">Source</a></div>
+    </li>
+    <li class="card">
+      <h3>By iNaturalist user</h3>
+      <p>Missing-article lists scoped to individual iNaturalist users.</p>
+      <div class="links"><a href="https://github.com/wikiproject-biodiversity/wikiproject-biodiversity.github.io/tree/master/iNaturalistUserBook">Source</a></div>
+    </li>
+  </ul>
+
+  <footer>
+    Part of the Wikidata <a href="https://www.wikidata.org/wiki/Wikidata:WikiProject_Biodiversity">WikiProject Biodiversity</a> ·
+    code on <a href="https://github.com/wikiproject-biodiversity">GitHub</a> and <a href="https://codeberg.org/wikiproject-biodiversity">Codeberg</a> ·
+    maintained by <a href="https://www.wikidata.org/wiki/User:Andrawaag">Andra Waagmeester</a>.
+  </footer>
+</body>
+</html>
