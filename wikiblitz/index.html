@@ -324,7 +324,7 @@ PREFIX status: <https://rs.gbif.org/terms/status/>
 PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?sp ?name WHERE {
-  ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+  ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; rdfs:label ?name .
 } ORDER BY ?name LIMIT ${SCOPE_LIMIT+1}`);
     return {keyType:"gbif",items:rows.map(b=>({key:val(b,"sp").split("/").pop(),name:val(b,"name")}))};
   }
@@ -338,7 +338,7 @@ PREFIX dwciri: <http://rs.tdwg.org/dwc/iri/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?sp ?name (COUNT(?occ) AS ?n) WHERE {
   ?occ dwc:countryCode "${cc}" ; dwciri:toTaxon ?sp .
-  ?sp gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+  ?sp gbif:rank rank:species ; rdfs:label ?name .
 } GROUP BY ?sp ?name ORDER BY DESC(?n) LIMIT ${SCOPE_LIMIT+1}`);
     return {keyType:"gbif",items:rows.map(b=>({key:val(b,"sp").split("/").pop(),name:val(b,"name"),count:+val(b,"n")}))};
   }
@@ -372,7 +372,7 @@ PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?sp ?name (COUNT(?occ) AS ?n) WHERE {
   <${iri}> geo:hasGeometry/geo:asWKT ?poly .
   SERVICE <${GBIF}> {
-    ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+    ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; rdfs:label ?name .
     ?occ dwciri:toTaxon ?sp ; ${ccLine}wdt:P625 ?pt .
   }
   FILTER(geof:sfContains(?poly, ?pt))
