@@ -33,6 +33,12 @@ restricted to `wikibase:wikiGroup "wikipedia"`). **Missing** = a Wikidata item e
 species image (P18) and the English / interface-language article titles, to power the
 **Create** (red-link) and **Translate** (Special:ContentTranslation) buttons.
 
+When a taxon has **no Wikidata image (P18)**, its card links to
+[**Tarsier**](https://andrawaag.github.io/tarsier/) deep-linked by Wikidata id
+(`?qid=…`) — so the curator lands ready to find an openly-licensed image and upload it to
+Wikimedia Commons. (A missing article often comes with a missing image; this closes both
+gaps in one workflow.)
+
 ## Data sources
 
 | Source | Used for | Endpoint |
