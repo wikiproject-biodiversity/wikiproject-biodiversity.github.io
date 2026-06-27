@@ -12,7 +12,7 @@ Everything runs live in the browser against public endpoints — no backend, no 
 ## Scopes
 
 - **Taxon** — type a taxon (autocompleted from **iNaturalist**), resolved to the GBIF
-  backbone; finds all accepted species under it.
+  backbone; finds the species under it (any status — each tile shows its GBIF taxonomic status).
 - **Country** — pick a country; finds the species recorded there (GBIF occurrences),
   most-recorded first.
 - **iNaturalist project** — search a project; pulls its observed species
@@ -38,6 +38,11 @@ When a taxon has **no Wikidata image (P18)**, its card links to
 (`?qid=…`) — so the curator lands ready to find an openly-licensed image and upload it to
 Wikimedia Commons. (A missing article often comes with a missing image; this closes both
 gaps in one workflow.)
+
+Every result tile shows the taxon's **GBIF taxonomic status** — *accepted* (green),
+*synonym → accepted name* (amber), or *doubtful / misapplied* (red) — so a curator can
+tell at a glance whether to write a new article or, for a synonym, point a redirect at the
+accepted name. (GBIF scopes are **not** filtered to accepted only, so synonyms surface too.)
 
 ## Data sources
 
