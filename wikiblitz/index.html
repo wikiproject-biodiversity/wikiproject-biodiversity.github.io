@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WikiBlitz finder — species missing a Wikipedia article (GBIF × Wikidata × iNaturalist)</title>
+<style>
+  :root{ --bg:#171d26; --panel:#222a35; --line:#36404e; --text:#e7ecf2; --muted:#9aa6b4; --accent:#2E7D9A; --accent2:#b5532a; --good:#3f9d6d; }
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text)}
+  a{color:#8fc7dd}
+  header{padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px 18px;align-items:baseline}
+  header h1{font-size:18px;font-weight:700;margin:0}
+  header .tag{font-size:12.5px;color:var(--muted);margin-right:auto}
+  .langbox{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}
+  .tchips{display:flex;flex-wrap:wrap;gap:4px}
+  .tchips .tc{display:inline-flex;align-items:center;background:#2b3a44;color:#cfe3ee;border-radius:999px;padding:3px 4px 3px 9px;font-size:12px}
+  .tchips .tc span{cursor:pointer;opacity:.65;padding:0 5px;font-weight:700}
+  .tchips .tc span:hover{opacity:1}
+  #addLang{min-width:0;padding:6px 8px}
+  .lc{display:flex;flex-wrap:wrap;gap:5px}
+  .lc a,.lc .ok{font-size:11px;padding:2px 8px;border-radius:999px;text-decoration:none}
+  .lc a{background:var(--accent2);color:#fff}
+  .lc .ok{background:#22332a;color:#9fd7b6}
+  select,button,input{font-size:14px;border-radius:8px;border:1px solid var(--line);background:#161c25;color:var(--text);padding:8px 10px}
+  select,input{outline:none}
+  button{cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  button:disabled{opacity:.5;cursor:default}
+  #ctrl{padding:14px 18px;background:#1b222c;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:12px}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap}
+  .tab{padding:7px 14px;border-radius:999px;border:1px solid var(--line);background:#161c25;color:var(--muted);font-size:13px;cursor:pointer}
+  .tab.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .field{position:relative;min-width:300px;flex:1;max-width:520px}
+  .field input,.field select{width:100%}
+  .ac{position:absolute;z-index:1000;left:0;right:0;top:calc(100% + 4px);background:#1b222c;border:1px solid var(--line);border-radius:8px;max-height:280px;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,.4);display:none}
+  .ac.open{display:block}
+  .ac .it{padding:8px 10px;cursor:pointer;border-bottom:1px solid #2a323d;font-size:13px}
+  .ac .it:hover,.ac .it.sel{background:#283341}
+  .ac .it .sub{color:var(--muted);font-size:11.5px}
+  #status{font-size:13px;color:var(--muted);min-height:18px}
+  #summary{padding:12px 18px;font-size:14px;display:none;gap:14px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--line);background:#1b222c}
+  #summary b{color:#fff}
+  .pill{font-size:12px;padding:3px 9px;border-radius:999px;background:#283341;color:var(--muted)}
+  .pill.miss{background:#3a2a22;color:#f0b690}
+  .pill.have{background:#22332a;color:#9fd7b6}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;padding:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+  .card .ph{height:140px;background:#10151c center/cover no-repeat;display:flex;align-items:center;justify-content:center;color:#566; font-size:12px}
+  .card .body{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  .card .nm{font-style:italic;font-weight:600;font-size:14px;line-height:1.25}
+  .card .cnt{font-size:11.5px;color:var(--muted)}
+  .acts{display:flex;flex-wrap:wrap;gap:6px}
+  .acts a{font-size:12px;text-decoration:none;padding:6px 9px;border-radius:7px;border:1px solid var(--line);color:var(--text);background:#161c25}
+  .acts a.tr{background:#21303a;border-color:#2c4150}
+  .ids{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--muted)}
+  .ids a{color:#8fc7dd;text-decoration:none}
+  .empty{padding:40px 18px;text-align:center;color:var(--muted)}
+  footer{padding:14px 18px;color:var(--muted);font-size:11.5px;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="appTitle">WikiBlitz finder</h1>
+  <span class="tag" id="tagline">Spot species with no Wikipedia article — fuel for your wiki-blitz</span>
+  <span class="langbox"><label id="ifaceLbl" for="uilang">Interface</label><select id="uilang"></select></span>
+  <span class="langbox"><label id="gapsLbl">Find gaps in</label><span id="targetChips" class="tchips"></span><select id="addLang"></select></span>
+</header>
+
+<div id="ctrl">
+  <div class="tabs">
+    <div class="tab active" data-mode="taxon" id="tabTaxon">Taxon</div>
+    <div class="tab" data-mode="country" id="tabCountry">Country</div>
+    <div class="tab" data-mode="project" id="tabProject">iNat project</div>
+    <div class="tab" data-mode="user" id="tabUser">iNat user</div>
+    <div class="tab" data-mode="area" id="tabArea">Area (OSM)</div>
+  </div>
+  <div class="row">
+    <div class="field" id="fieldTaxon">
+      <input id="taxonInput" autocomplete="off" placeholder="Taxon name (e.g. Vespidae)…">
+      <div class="ac" id="taxonAc"></div>
+    </div>
+    <div class="field" id="fieldCountry" style="display:none">
+      <select id="countrySel"></select>
+    </div>
+    <div class="field" id="fieldProject" style="display:none">
+      <input id="projectInput" autocomplete="off" placeholder="iNaturalist project…">
+      <div class="ac" id="projectAc"></div>
+    </div>
+    <div class="field" id="fieldUser" style="display:none">
+      <input id="userInput" autocomplete="off" placeholder="iNaturalist username…">
+      <div class="ac" id="userAc"></div>
+    </div>
+    <div class="field" id="fieldArea" style="display:none">
+      <input id="areaInput" autocomplete="off" placeholder="Area — national park, region…">
+      <div class="ac" id="areaAc"></div>
+    </div>
+    <div class="field" id="fieldAreaTaxon" style="display:none">
+      <input id="areaTaxonInput" autocomplete="off" placeholder="…within taxon (e.g. Odonata)">
+      <div class="ac" id="areaTaxonAc"></div>
+    </div>
+    <button class="primary" id="run">Find missing articles</button>
+    <button id="copy" disabled>Copy worklist</button>
+  </div>
+  <div id="status">Choose a scope and press “Find missing articles”.</div>
+</div>
+
+<div id="summary"></div>
+<div id="grid"></div>
+<footer><span id="foot"></span> · <a href="https://codeberg.org/wikiproject-biodiversity/iNotListed" target="_blank" rel="noopener">inspired by iNotListed</a></footer>
+
+<script>
+const GBIF="https://qlever.dev/api/gbif", WD="https://qlever.dev/api/wikidata", OSMP="https://qlever.dev/api/osm-planet", INAT="https://api.inaturalist.org/v1";
+const SCOPE_LIMIT=250, PROJECT_LIMIT=200;
+
+/* ---------------- i18n ---------------- */
+const I18N={
+ en:{appTitle:"WikiBlitz finder",tagline:"Spot species with no Wikipedia article — fuel for your wiki-blitz",iface:"Interface",gaps:"Find gaps in",
+   taxon:"Taxon",country:"Country",project:"iNat project",user:"iNat user",area:"Area (OSM)",
+   taxonPH:"Taxon name (e.g. Vespidae)…",projectPH:"iNaturalist project…",userPH:"iNaturalist username…",areaPH:"Area — national park, region…",areaTaxonPH:"…within taxon (e.g. Odonata)",
+   find:"Find missing articles",copy:"Copy worklist",copied:"Copied ✓",pick:"Choose a scope and press “Find missing articles”.",
+   scoping:"Gathering taxa…",checking:"{n} taxa in scope — checking Wikipedia…",
+   result:"<b>{missing}</b> of {withItem} taxa miss an article in ≥1 chosen language",have:"{have} have them all",noItem:"{n} have no Wikidata item yet",
+   capped:"scope capped at {n}",nothing:"Every taxon in this scope already has all chosen languages 🎉",empty:"No taxa found for this scope.",
+   create:"Create",translate:"Translate",wd:"Wikidata",noImg:"no image",err:"Failed: {m}",
+   pickTaxon:"Pick a taxon from the suggestions first.",pickProject:"Pick a project from the suggestions first.",pickUser:"Pick an iNaturalist user first.",pickArea:"Pick an area from the suggestions first.",
+   areaHint:"Tip: pick a focused taxon (a family/order) — very large groups like all birds may time out.",occ:"{n} records",
+   foot:"Data: GBIF · Wikidata · iNaturalist · OpenStreetMap, via the QLever SPARQL endpoints. Missing-article = a Wikidata item (P846/P3151) with no sitelink to a chosen Wikipedia edition."},
+ nl:{appTitle:"WikiBlitz-zoeker",tagline:"Vind soorten zonder Wikipedia-artikel — brandstof voor je wiki-blitz",iface:"Interface",gaps:"Hiaten in",
+   taxon:"Taxon",country:"Land",project:"iNat-project",user:"iNat-gebruiker",area:"Gebied (OSM)",
+   taxonPH:"Taxonnaam (bv. Vespidae)…",projectPH:"iNaturalist-project…",userPH:"iNaturalist-gebruikersnaam…",areaPH:"Gebied — nationaal park, regio…",areaTaxonPH:"…binnen taxon (bv. Odonata)",
+   find:"Zoek ontbrekende artikelen",copy:"Kopieer werklijst",copied:"Gekopieerd ✓",pick:"Kies een bereik en klik op “Zoek ontbrekende artikelen”.",
+   scoping:"Taxa verzamelen…",checking:"{n} taxa in bereik — Wikipedia controleren…",
+   result:"<b>{missing}</b> van {withItem} taxa missen een artikel in ≥1 gekozen taal",have:"{have} hebben ze allemaal",noItem:"{n} hebben nog geen Wikidata-item",
+   capped:"bereik beperkt tot {n}",nothing:"Elk taxon in dit bereik heeft al alle gekozen talen 🎉",empty:"Geen taxa gevonden voor dit bereik.",
+   create:"Aanmaken",translate:"Vertalen",wd:"Wikidata",noImg:"geen afbeelding",err:"Mislukt: {m}",
+   pickTaxon:"Kies eerst een taxon uit de suggesties.",pickProject:"Kies eerst een project uit de suggesties.",pickUser:"Kies eerst een iNaturalist-gebruiker.",pickArea:"Kies eerst een gebied uit de suggesties.",
+   areaHint:"Tip: kies een afgebakend taxon (familie/orde) — heel grote groepen zoals alle vogels kunnen aflopen in een time-out.",occ:"{n} waarnemingen",
+   foot:"Gegevens: GBIF · Wikidata · iNaturalist · OpenStreetMap, via de QLever-SPARQL-endpoints. Ontbrekend artikel = een Wikidata-item (P846/P3151) zonder sitelink naar een gekozen Wikipedia-editie."},
+ fr:{appTitle:"Détecteur de WikiBlitz",tagline:"Repérez les espèces sans article Wikipédia — pour vos wiki-blitz",iface:"Interface",gaps:"Lacunes en",
+   taxon:"Taxon",country:"Pays",project:"Projet iNat",user:"Utilisateur iNat",area:"Zone (OSM)",
+   taxonPH:"Nom de taxon (p. ex. Vespidae)…",projectPH:"Projet iNaturalist…",userPH:"Nom d’utilisateur iNaturalist…",areaPH:"Zone — parc national, région…",areaTaxonPH:"…dans le taxon (p. ex. Odonata)",
+   find:"Trouver les articles manquants",copy:"Copier la liste",copied:"Copié ✓",pick:"Choisissez un périmètre puis cliquez sur « Trouver les articles manquants ».",
+   scoping:"Collecte des taxons…",checking:"{n} taxons — vérification de Wikipédia…",
+   result:"<b>{missing}</b> taxons sur {withItem} n’ont pas d’article dans ≥1 langue choisie",have:"{have} les ont toutes",noItem:"{n} n’ont pas encore d’élément Wikidata",
+   capped:"périmètre limité à {n}",nothing:"Tous les taxons de ce périmètre ont déjà toutes les langues choisies 🎉",empty:"Aucun taxon trouvé pour ce périmètre.",
+   create:"Créer",translate:"Traduire",wd:"Wikidata",noImg:"pas d’image",err:"Échec : {m}",
+   pickTaxon:"Choisissez d’abord un taxon dans les suggestions.",pickProject:"Choisissez d’abord un projet dans les suggestions.",pickUser:"Choisissez d’abord un utilisateur iNaturalist.",pickArea:"Choisissez d’abord une zone dans les suggestions.",
+   areaHint:"Astuce : choisissez un taxon ciblé (famille/ordre) — les très grands groupes comme tous les oiseaux peuvent expirer.",occ:"{n} observations",
+   foot:"Données : GBIF · Wikidata · iNaturalist · OpenStreetMap, via les points SPARQL QLever. Article manquant = un élément Wikidata (P846/P3151) sans lien vers une édition Wikipédia choisie."},
+ de:{appTitle:"WikiBlitz-Finder",tagline:"Arten ohne Wikipedia-Artikel finden — Treibstoff für deinen Wiki-Blitz",iface:"Oberfläche",gaps:"Lücken in",
+   taxon:"Taxon",country:"Land",project:"iNat-Projekt",user:"iNat-Nutzer",area:"Gebiet (OSM)",
+   taxonPH:"Taxonname (z. B. Vespidae)…",projectPH:"iNaturalist-Projekt…",userPH:"iNaturalist-Benutzername…",areaPH:"Gebiet — Nationalpark, Region…",areaTaxonPH:"…innerhalb Taxon (z. B. Odonata)",
+   find:"Fehlende Artikel finden",copy:"Arbeitsliste kopieren",copied:"Kopiert ✓",pick:"Bereich wählen und auf „Fehlende Artikel finden“ klicken.",
+   scoping:"Taxa werden gesammelt…",checking:"{n} Taxa — Wikipedia wird geprüft…",
+   result:"<b>{missing}</b> von {withItem} Taxa fehlt ein Artikel in ≥1 gewählten Sprache",have:"{have} haben alle",noItem:"{n} haben noch kein Wikidata-Objekt",
+   capped:"Bereich auf {n} begrenzt",nothing:"Jedes Taxon in diesem Bereich hat bereits alle gewählten Sprachen 🎉",empty:"Keine Taxa für diesen Bereich gefunden.",
+   create:"Anlegen",translate:"Übersetzen",wd:"Wikidata",noImg:"kein Bild",err:"Fehlgeschlagen: {m}",
+   pickTaxon:"Wähle zuerst ein Taxon aus den Vorschlägen.",pickProject:"Wähle zuerst ein Projekt aus den Vorschlägen.",pickUser:"Wähle zuerst einen iNaturalist-Nutzer.",pickArea:"Wähle zuerst ein Gebiet aus den Vorschlägen.",
+   areaHint:"Tipp: Wähle ein eng gefasstes Taxon (Familie/Ordnung) — sehr große Gruppen wie alle Vögel können in eine Zeitüberschreitung laufen.",occ:"{n} Nachweise",
+   foot:"Daten: GBIF · Wikidata · iNaturalist · OpenStreetMap, über die QLever-SPARQL-Endpunkte. Fehlender Artikel = ein Wikidata-Objekt (P846/P3151) ohne Sitelink zu einer gewählten Wikipedia-Ausgabe."},
+ es:{appTitle:"Buscador WikiBlitz",tagline:"Detecta especies sin artículo en Wikipedia — combustible para tu wiki-blitz",iface:"Interfaz",gaps:"Vacíos en",
+   taxon:"Taxón",country:"País",project:"Proyecto iNat",user:"Usuario iNat",area:"Área (OSM)",
+   taxonPH:"Nombre de taxón (p. ej. Vespidae)…",projectPH:"Proyecto de iNaturalist…",userPH:"Usuario de iNaturalist…",areaPH:"Área — parque nacional, región…",areaTaxonPH:"…dentro del taxón (p. ej. Odonata)",
+   find:"Buscar artículos faltantes",copy:"Copiar lista",copied:"Copiado ✓",pick:"Elige un ámbito y pulsa «Buscar artículos faltantes».",
+   scoping:"Reuniendo taxones…",checking:"{n} taxones — comprobando Wikipedia…",
+   result:"<b>{missing}</b> de {withItem} taxones les falta un artículo en ≥1 idioma elegido",have:"{have} los tienen todos",noItem:"{n} aún no tienen elemento de Wikidata",
+   capped:"ámbito limitado a {n}",nothing:"Todos los taxones de este ámbito ya tienen todos los idiomas elegidos 🎉",empty:"No se encontraron taxones para este ámbito.",
+   create:"Crear",translate:"Traducir",wd:"Wikidata",noImg:"sin imagen",err:"Falló: {m}",
+   pickTaxon:"Elige primero un taxón de las sugerencias.",pickProject:"Elige primero un proyecto de las sugerencias.",pickUser:"Elige primero un usuario de iNaturalist.",pickArea:"Elige primero un área de las sugerencias.",
+   areaHint:"Consejo: elige un taxón acotado (familia/orden) — grupos muy grandes como todas las aves pueden agotar el tiempo.",occ:"{n} registros",
+   foot:"Datos: GBIF · Wikidata · iNaturalist · OpenStreetMap, mediante los puntos SPARQL de QLever. Artículo faltante = un elemento de Wikidata (P846/P3151) sin enlace a una edición de Wikipedia elegida."},
+ it:{appTitle:"Cercatore WikiBlitz",tagline:"Individua le specie senza voce su Wikipedia — carburante per il tuo wiki-blitz",iface:"Interfaccia",gaps:"Lacune in",
+   taxon:"Taxon",country:"Paese",project:"Progetto iNat",user:"Utente iNat",area:"Area (OSM)",
+   taxonPH:"Nome del taxon (es. Vespidae)…",projectPH:"Progetto iNaturalist…",userPH:"Nome utente iNaturalist…",areaPH:"Area — parco nazionale, regione…",areaTaxonPH:"…entro il taxon (es. Odonata)",
+   find:"Trova voci mancanti",copy:"Copia elenco",copied:"Copiato ✓",pick:"Scegli un ambito e premi «Trova voci mancanti».",
+   scoping:"Raccolta dei taxa…",checking:"{n} taxa — controllo di Wikipedia…",
+   result:"<b>{missing}</b> taxa su {withItem} mancano di una voce in ≥1 lingua scelta",have:"{have} le hanno tutte",noItem:"{n} non hanno ancora un elemento Wikidata",
+   capped:"ambito limitato a {n}",nothing:"Ogni taxon di questo ambito ha già tutte le lingue scelte 🎉",empty:"Nessun taxon trovato per questo ambito.",
+   create:"Crea",translate:"Traduci",wd:"Wikidata",noImg:"nessuna immagine",err:"Non riuscito: {m}",
+   pickTaxon:"Scegli prima un taxon dai suggerimenti.",pickProject:"Scegli prima un progetto dai suggerimenti.",pickUser:"Scegli prima un utente iNaturalist.",pickArea:"Scegli prima un’area dai suggerimenti.",
+   areaHint:"Suggerimento: scegli un taxon mirato (famiglia/ordine) — gruppi molto grandi come tutti gli uccelli possono andare in timeout.",occ:"{n} record",
+   foot:"Dati: GBIF · Wikidata · iNaturalist · OpenStreetMap, tramite gli endpoint SPARQL di QLever. Voce mancante = un elemento Wikidata (P846/P3151) senza sitelink a un’edizione di Wikipedia scelta."},
+ pt:{appTitle:"Localizador WikiBlitz",tagline:"Encontre espécies sem artigo na Wikipédia — combustível para o seu wiki-blitz",iface:"Interface",gaps:"Lacunas em",
+   taxon:"Táxon",country:"País",project:"Projeto iNat",user:"Utilizador iNat",area:"Área (OSM)",
+   taxonPH:"Nome do táxon (ex. Vespidae)…",projectPH:"Projeto do iNaturalist…",userPH:"Utilizador do iNaturalist…",areaPH:"Área — parque nacional, região…",areaTaxonPH:"…dentro do táxon (ex. Odonata)",
+   find:"Encontrar artigos em falta",copy:"Copiar lista",copied:"Copiado ✓",pick:"Escolha um âmbito e clique em «Encontrar artigos em falta».",
+   scoping:"A reunir táxons…",checking:"{n} táxons — a verificar a Wikipédia…",
+   result:"<b>{missing}</b> de {withItem} táxons faltam um artigo em ≥1 idioma escolhido",have:"{have} têm todos",noItem:"{n} ainda não têm item na Wikidata",
+   capped:"âmbito limitado a {n}",nothing:"Todos os táxons deste âmbito já têm todos os idiomas escolhidos 🎉",empty:"Nenhum táxon encontrado para este âmbito.",
+   create:"Criar",translate:"Traduzir",wd:"Wikidata",noImg:"sem imagem",err:"Falhou: {m}",
+   pickTaxon:"Escolha primeiro um táxon nas sugestões.",pickProject:"Escolha primeiro um projeto nas sugestões.",pickUser:"Escolha primeiro um utilizador do iNaturalist.",pickArea:"Escolha primeiro uma área nas sugestões.",
+   areaHint:"Dica: escolha um táxon focado (família/ordem) — grupos muito grandes como todas as aves podem expirar.",occ:"{n} registos",
+   foot:"Dados: GBIF · Wikidata · iNaturalist · OpenStreetMap, através dos endpoints SPARQL do QLever. Artigo em falta = um item da Wikidata (P846/P3151) sem ligação a uma edição da Wikipédia escolhida."}
+};
+const nav=(navigator.language||'en').slice(0,2).toLowerCase();
+let UILANG=I18N[nav]?nav:'en';
+let targetLangs=[UILANG];
+function fmt(s,o){return String(s).replace(/\{(\w+)\}/g,(_,k)=>o[k]!=null?o[k]:'');}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+let langName=c=>c, regionName=c=>c;
+function rebuildNames(){
+  try{const d=new Intl.DisplayNames([UILANG],{type:'language'});langName=c=>{const v=d.of(c);return v?v[0].toUpperCase()+v.slice(1):c;};}catch(e){langName=c=>c;}
+  try{const r=new Intl.DisplayNames([UILANG],{type:'region'});regionName=c=>r.of(c)||c;}catch(e){regionName=c=>c;}
+}
+rebuildNames();
+
+const WIKI_LANGS="en nl fr de es it pt sv pl ru ja zh uk ar fa sr ca id ko no fi hu cs ro eu tr he el da sk bg hr lt sl et gl simple ms vi hi th cy ga is la".split(" ");
+const COUNTRIES="AD AE AF AG AL AM AO AR AT AU AZ BA BB BD BE BF BG BH BI BJ BN BO BR BS BT BW BY BZ CA CD CF CG CH CI CL CM CN CO CR CU CV CY CZ DE DJ DK DM DO DZ EC EE EG ER ES ET FI FJ FM FR GA GB GD GE GH GM GN GQ GR GT GW GY HN HR HT HU ID IE IL IN IQ IR IS IT JM JO JP KE KG KH KI KM KN KP KR KW KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MG MH MK ML MM MN MR MT MU MV MW MX MY MZ NA NE NG NI NL NO NP NR NZ OM PA PE PG PH PK PL PT PW PY QA RO RS RU RW SA SB SC SD SE SG SI SK SL SM SN SO SR SS ST SV SY SZ TD TG TH TJ TL TM TN TO TR TT TV TW TZ UA UG US UY UZ VC VE VN VU WS YE ZA ZM ZW".split(" ");
+
+/* ---------------- DOM ---------------- */
+const $=id=>document.getElementById(id);
+const statusEl=$("status"), summaryEl=$("summary"), gridEl=$("grid");
+let mode="taxon", selTaxon=null, selProject=null, selUser=null, selArea=null, selAreaTaxon=null;
+let lastMissing=[];
+const safe=l=>l.replace(/[^a-z0-9]/gi,'_');
+
+function fillLangSelect(s,sel){
+  s.innerHTML="";
+  const codes=[...new Set([...Object.keys(I18N),...WIKI_LANGS])];
+  codes.map(c=>[c,langName(c)]).sort((a,b)=>a[1].localeCompare(b[1])).forEach(([c,n])=>{
+    const o=document.createElement("option");o.value=c;o.textContent=n;s.appendChild(o);});
+  s.value=sel;
+}
+function fillCountries(){
+  const s=$("countrySel");s.innerHTML="";
+  COUNTRIES.map(c=>[c,regionName(c)]).sort((a,b)=>a[1].localeCompare(b[1])).forEach(([c,n])=>{
+    const o=document.createElement("option");o.value=c;o.textContent=n+" ("+c+")";s.appendChild(o);});
+  s.value="BE";
+}
+function renderTargetChips(){
+  $("targetChips").innerHTML=targetLangs.map(l=>`<span class="tc"><b title="${esc(langName(l))}">${l}</b><span data-l="${l}" title="remove">×</span></span>`).join("");
+}
+function fillAddLang(){
+  const s=$("addLang"), cur=new Set(targetLangs);
+  const codes=[...new Set([...Object.keys(I18N),...WIKI_LANGS])].filter(c=>!cur.has(c));
+  s.innerHTML=`<option value="">+</option>`+codes.map(c=>[c,langName(c)]).sort((a,b)=>a[1].localeCompare(b[1])).map(([c,n])=>`<option value="${c}">${esc(n)}</option>`).join("");
+}
+
+function applyI18n(){
+  const t=I18N[UILANG];document.documentElement.lang=UILANG;
+  $("appTitle").textContent=t.appTitle;$("tagline").textContent=t.tagline;
+  $("ifaceLbl").textContent=t.iface;$("gapsLbl").textContent=t.gaps;
+  $("tabTaxon").textContent=t.taxon;$("tabCountry").textContent=t.country;$("tabProject").textContent=t.project;$("tabUser").textContent=t.user;$("tabArea").textContent=t.area;
+  $("taxonInput").placeholder=t.taxonPH;$("projectInput").placeholder=t.projectPH;$("userInput").placeholder=t.userPH;
+  $("areaInput").placeholder=t.areaPH;$("areaTaxonInput").placeholder=t.areaTaxonPH;
+  $("run").textContent=t.find;$("copy").textContent=t.copy;
+  $("foot").textContent=t.foot;
+  if(summaryEl.style.display!=="flex") statusEl.textContent = mode==="area"?t.areaHint:t.pick;
+}
+
+/* ---------------- helpers ---------------- */
+async function jget(url){const r=await fetch(url,{headers:{Accept:"application/json"}});if(!r.ok)throw new Error("HTTP "+r.status);return r.json();}
+async function sparql(ep,q){const r=await fetch(ep+"?query="+encodeURIComponent(q),{headers:{Accept:"application/sparql-results+json"}});if(!r.ok)throw new Error("SPARQL "+r.status);return (await r.json()).results.bindings;}
+const val=(b,k)=>b[k]&&b[k].value;
+
+/* ---------------- autocomplete ---------------- */
+function attachAC(input,box,fetchFn,onSelect){
+  let items=[],idx=-1,timer=null;
+  const close=()=>{box.classList.remove("open");idx=-1;};
+  const draw=()=>{box.innerHTML=items.map((it,i)=>`<div class="it${i===idx?' sel':''}" data-i="${i}">${esc(it.label)}<div class="sub">${esc(it.sub||"")}</div></div>`).join("");box.classList.toggle("open",items.length>0);};
+  input.addEventListener("input",()=>{
+    onSelect(null); const q=input.value.trim();
+    clearTimeout(timer); if(q.length<2){items=[];close();return;}
+    timer=setTimeout(async()=>{ try{ items=await fetchFn(q); idx=-1; draw(); }catch(e){ items=[];close(); } },280);
+  });
+  input.addEventListener("keydown",e=>{
+    if(!box.classList.contains("open"))return;
+    if(e.key==="ArrowDown"){idx=Math.min(idx+1,items.length-1);draw();e.preventDefault();}
+    else if(e.key==="ArrowUp"){idx=Math.max(idx-1,0);draw();e.preventDefault();}
+    else if(e.key==="Enter"){if(idx>=0){choose(idx);e.preventDefault();}}
+    else if(e.key==="Escape"){close();}
+  });
+  box.addEventListener("mousedown",e=>{const d=e.target.closest(".it");if(d)choose(+d.dataset.i);});
+  function choose(i){const it=items[i];input.value=it.label;onSelect(it.value);close();}
+  document.addEventListener("click",e=>{if(!box.contains(e.target)&&e.target!==input)close();});
+}
+const inatTaxon=async q=>{
+  const d=await jget(`${INAT}/taxa/autocomplete?q=${encodeURIComponent(q)}&per_page=8`);
+  return d.results.map(r=>({label:r.name,sub:(r.rank||"")+(r.preferred_common_name?" · "+r.preferred_common_name:""),value:{name:r.name,rank:r.rank,inatId:r.id}}));
+};
+attachAC($("taxonInput"),$("taxonAc"),inatTaxon,v=>{selTaxon=v;});
+attachAC($("areaTaxonInput"),$("areaTaxonAc"),inatTaxon,v=>{selAreaTaxon=v;});
+attachAC($("projectInput"),$("projectAc"),async q=>{
+  const d=await jget(`${INAT}/projects?q=${encodeURIComponent(q)}&per_page=8`);
+  return d.results.map(r=>({label:r.title,sub:(r.slug||"")+(r.place_guess?" · "+r.place_guess:""),value:{id:r.id,title:r.title}}));
+}, v=>{selProject=v;});
+attachAC($("userInput"),$("userAc"),async q=>{
+  const d=await jget(`${INAT}/users/autocomplete?q=${encodeURIComponent(q)}&per_page=8`);
+  return d.results.map(r=>({label:r.login,sub:(r.name||"")+(r.observations_count?" · "+r.observations_count+" obs":""),value:{login:r.login}}));
+}, v=>{selUser=v;});
+attachAC($("areaInput"),$("areaAc"),async q=>{
+  const d=await jget(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&addressdetails=1&limit=6`);
+  return d.filter(r=>r.osm_type==="relation"||r.osm_type==="way").map(r=>{
+    const parts=r.display_name.split(",");
+    return {label:parts[0].trim(),sub:parts.slice(1,3).join(",").trim()+" · "+(r.type||r.osm_type),
+      value:{type:r.osm_type,id:r.osm_id,country:((r.address&&r.address.country_code)||"").toUpperCase(),name:parts[0].trim()}};});
+}, v=>{selArea=v;});
+
+/* ---------------- scope → taxa ---------------- */
+async function gbifKeyOf(name){const m=await jget(`https://api.gbif.org/v1/species/match?name=${encodeURIComponent(name)}`);return m.usageKey;}
+function inatSpecies(d){return (d.results||[]).filter(r=>["species","subspecies","variety"].includes(r.taxon.rank))
+  .map(r=>({key:String(r.taxon.id),name:r.taxon.name,count:r.count}));}
+
+async function scopeTaxa(){
+  const t=I18N[UILANG];
+  if(mode==="taxon"){
+    if(!selTaxon)throw new Error(t.pickTaxon);
+    const key=await gbifKeyOf(selTaxon.name); if(!key)throw new Error(t.empty);
+    const rows=await sparql(GBIF,`PREFIX gbifsp: <https://www.gbif.org/species/>
+PREFIX gbif: <https://rs.gbif.org/terms/>
+PREFIX rank: <https://rs.gbif.org/terms/rank/>
+PREFIX status: <https://rs.gbif.org/terms/status/>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?sp ?name WHERE {
+  ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+} ORDER BY ?name LIMIT ${SCOPE_LIMIT+1}`);
+    return {keyType:"gbif",items:rows.map(b=>({key:val(b,"sp").split("/").pop(),name:val(b,"name")}))};
+  }
+  if(mode==="country"){
+    const cc=$("countrySel").value;
+    const rows=await sparql(GBIF,`PREFIX gbif: <https://rs.gbif.org/terms/>
+PREFIX rank: <https://rs.gbif.org/terms/rank/>
+PREFIX status: <https://rs.gbif.org/terms/status/>
+PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX dwciri: <http://rs.tdwg.org/dwc/iri/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?sp ?name (COUNT(?occ) AS ?n) WHERE {
+  ?occ dwc:countryCode "${cc}" ; dwciri:toTaxon ?sp .
+  ?sp gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+} GROUP BY ?sp ?name ORDER BY DESC(?n) LIMIT ${SCOPE_LIMIT+1}`);
+    return {keyType:"gbif",items:rows.map(b=>({key:val(b,"sp").split("/").pop(),name:val(b,"name"),count:+val(b,"n")}))};
+  }
+  if(mode==="project"){
+    if(!selProject)throw new Error(t.pickProject);
+    const d=await jget(`${INAT}/observations/species_counts?project_id=${selProject.id}&per_page=${PROJECT_LIMIT}`);
+    return {keyType:"inat",items:inatSpecies(d)};
+  }
+  if(mode==="user"){
+    if(!selUser)throw new Error(t.pickUser);
+    const d=await jget(`${INAT}/observations/species_counts?user_id=${encodeURIComponent(selUser.login)}&per_page=${PROJECT_LIMIT}`);
+    return {keyType:"inat",items:inatSpecies(d)};
+  }
+  // area (OSM) + taxon
+  if(!selArea)throw new Error(t.pickArea);
+  if(!selAreaTaxon)throw new Error(t.pickTaxon);
+  const key=await gbifKeyOf(selAreaTaxon.name); if(!key)throw new Error(t.empty);
+  const iri=`https://www.openstreetmap.org/${selArea.type}/${selArea.id}`;
+  const ccLine=selArea.country?`dwc:countryCode "${selArea.country}" ; `:"";
+  const rows=await sparql(OSMP,`PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
+PREFIX gbifsp: <https://www.gbif.org/species/>
+PREFIX gbif: <https://rs.gbif.org/terms/>
+PREFIX rank: <https://rs.gbif.org/terms/rank/>
+PREFIX status: <https://rs.gbif.org/terms/status/>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX dwciri: <http://rs.tdwg.org/dwc/iri/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?sp ?name (COUNT(?occ) AS ?n) WHERE {
+  <${iri}> geo:hasGeometry/geo:asWKT ?poly .
+  SERVICE <${GBIF}> {
+    ?sp skos:broader* gbifsp:${key} ; gbif:rank rank:species ; gbif:taxonomicStatus status:accepted ; rdfs:label ?name .
+    ?occ dwciri:toTaxon ?sp ; ${ccLine}wdt:P625 ?pt .
+  }
+  FILTER(geof:sfContains(?poly, ?pt))
+} GROUP BY ?sp ?name ORDER BY DESC(?n) LIMIT ${SCOPE_LIMIT+1}`);
+  return {keyType:"gbif",items:rows.map(b=>({key:val(b,"sp").split("/").pop(),name:val(b,"name"),count:+val(b,"n")}))};
+}
+
+/* ---------------- enrich (Wikidata, multi-language) ---------------- */
+async function enrich(items,keyType){
+  const prop=keyType==="gbif"?"wdt:P846":"wdt:P3151";
+  const values=items.map(i=>`"${i.key}"`).join(" ");
+  const langs=targetLangs;
+  const binds=langs.map(l=>`  BIND(EXISTS { ?x_${safe(l)} schema:about ?wd ; schema:isPartOf <https://${l}.wikipedia.org/> } AS ?h_${safe(l)})`).join("\n");
+  const sel=langs.map(l=>`(SAMPLE(?h_${safe(l)}) AS ?has_${safe(l)})`).join(" ");
+  const uiOpt=(UILANG!=="en")?`OPTIONAL { ?aui schema:about ?wd ; schema:isPartOf <https://${UILANG}.wikipedia.org/> ; schema:name ?uiT }`:"";
+  const rows=await sparql(WD,`PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX schema: <http://schema.org/>
+SELECT ?key ?wd (SAMPLE(?img) AS ?image) (SAMPLE(?g) AS ?gbif) (SAMPLE(?in) AS ?inat) (SAMPLE(?nc) AS ?ncbi)
+       ${sel} (SAMPLE(?enT) AS ?enTitle) (SAMPLE(?uiT) AS ?uiTitle) WHERE {
+  VALUES ?key { ${values} }
+  ?wd ${prop} ?key .
+  OPTIONAL { ?wd wdt:P18 ?img }
+  OPTIONAL { ?wd wdt:P846 ?g }
+  OPTIONAL { ?wd wdt:P3151 ?in }
+  OPTIONAL { ?wd wdt:P685 ?nc }
+${binds}
+  OPTIONAL { ?aen schema:about ?wd ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?enT }
+  ${uiOpt}
+} GROUP BY ?key ?wd`);
+  const map={};
+  rows.forEach(b=>{ const has={}; langs.forEach(l=>has[l]=val(b,"has_"+safe(l))==="true");
+    map[val(b,"key")]={wd:val(b,"wd").split("/").pop(),image:val(b,"image"),gbif:val(b,"gbif"),inat:val(b,"inat"),ncbi:val(b,"ncbi"),
+      has,enTitle:val(b,"enTitle"),uiTitle:val(b,"uiTitle")};});
+  return map;
+}
+
+/* ---------------- run ---------------- */
+async function run(){
+  const t=I18N[UILANG];
+  if(!targetLangs.length){statusEl.textContent=t.pick;return;}
+  $("run").disabled=true; summaryEl.style.display="none"; gridEl.innerHTML=""; $("copy").disabled=true;
+  statusEl.textContent=t.scoping;
+  try{
+    const {items,keyType}=await scopeTaxa();
+    const capped=items.length>SCOPE_LIMIT;
+    const scope=items.slice(0,SCOPE_LIMIT);
+    if(!scope.length){statusEl.textContent=t.empty;$("run").disabled=false;return;}
+    statusEl.textContent=fmt(t.checking,{n:scope.length});
+    const info=await enrich(scope,keyType);
+    let withItem=0, have=0, noItem=0; const missing=[]; const perLang={};
+    targetLangs.forEach(l=>perLang[l]=0);
+    for(const it of scope){
+      const e=info[it.key];
+      if(!e){noItem++;continue;}
+      withItem++;
+      const missLangs=targetLangs.filter(l=>!e.has[l]);
+      missLangs.forEach(l=>perLang[l]++);
+      if(!missLangs.length){have++;continue;}
+      missing.push({...it,...e,missLangs});
+    }
+    missing.sort((a,b)=>(b.count||0)-(a.count||0) || (b.missLangs.length-a.missLangs.length) || a.name.localeCompare(b.name));
+    lastMissing=missing;
+    renderSummary({missing:missing.length,withItem,have,noItem,capped,perLang});
+    renderCards(missing);
+    statusEl.textContent="";
+    $("copy").disabled=missing.length===0;
+  }catch(e){ statusEl.textContent=fmt(t.err,{m:e.message}); }
+  $("run").disabled=false;
+}
+
+function renderSummary({missing,withItem,have,noItem,capped,perLang}){
+  const t=I18N[UILANG];
+  let h=`<span>${fmt(t.result,{missing,withItem})}</span>`;
+  h+=`<span class="pill have">${fmt(t.have,{have})}</span>`;
+  targetLangs.forEach(l=>{ if(perLang[l]) h+=`<span class="pill miss">${esc(langName(l))}: ${perLang[l]}</span>`; });
+  if(noItem)h+=`<span class="pill">${fmt(t.noItem,{n:noItem})}</span>`;
+  if(capped)h+=`<span class="pill">${fmt(t.capped,{n:SCOPE_LIMIT})}</span>`;
+  summaryEl.innerHTML=h; summaryEl.style.display="flex";
+  if(missing===0) gridEl.innerHTML=`<div class="empty">${t.nothing}</div>`;
+}
+
+function createUrl(name,lang){return `https://${lang}.wikipedia.org/w/index.php?title=${encodeURIComponent(name)}&action=edit`;}
+function translateLink(e){
+  const lang=e.missLangs[0]; if(!lang)return null;
+  let src=null,title=null;
+  if(e.uiTitle&&UILANG!==lang){src=UILANG;title=e.uiTitle;}
+  else if(e.enTitle&&lang!=="en"){src="en";title=e.enTitle;}
+  if(!src)return null;
+  return {lang,src,url:`https://${lang}.wikipedia.org/wiki/Special:ContentTranslation?from=${src}&to=${lang}&page=${encodeURIComponent(title.replace(/ /g,"_"))}`};
+}
+function renderCards(missing){
+  const t=I18N[UILANG];
+  gridEl.innerHTML=missing.map(e=>{
+    const img=e.image?`<div class="ph" style="background-image:url('${esc(e.image.replace(/^http:/,'https:'))}?width=300')"></div>`:`<div class="ph">${t.noImg}</div>`;
+    const gbif=e.gbif||(/^\d+$/.test(e.key)&&e.key);
+    const ids=[`<a href="https://www.wikidata.org/wiki/${e.wd}" target="_blank" rel="noopener">${e.wd}</a>`];
+    if(gbif)ids.push(`<a href="https://www.gbif.org/species/${gbif}" target="_blank" rel="noopener">GBIF</a>`);
+    if(e.inat)ids.push(`<a href="https://www.inaturalist.org/taxa/${e.inat}" target="_blank" rel="noopener">iNat</a>`);
+    if(e.ncbi)ids.push(`<a href="https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi?id=${e.ncbi}" target="_blank" rel="noopener">NCBI</a>`);
+    const chips=targetLangs.map(l=> e.has[l]
+      ? `<span class="ok" title="${esc(langName(l))}">✓ ${l}</span>`
+      : `<a href="${createUrl(e.name,l)}" target="_blank" rel="noopener" title="${esc(t.create)} — ${esc(langName(l))}">✎ ${l}</a>`).join("");
+    const tr=translateLink(e);
+    const acts=[];
+    if(tr)acts.push(`<a class="tr" href="${tr.url}" target="_blank" rel="noopener">${t.translate} ${tr.lang} ← ${esc(langName(tr.src))}</a>`);
+    acts.push(`<a href="https://www.wikidata.org/wiki/${e.wd}" target="_blank" rel="noopener">${t.wd}</a>`);
+    return `<div class="card">${img}<div class="body">
+      <div class="nm">${esc(e.name)}</div>
+      ${e.count?`<div class="cnt">${fmt(t.occ,{n:e.count.toLocaleString(UILANG)})}</div>`:""}
+      <div class="lc">${chips}</div>
+      <div class="acts">${acts.join("")}</div>
+      <div class="ids">${ids.join("")}</div>
+    </div></div>`;
+  }).join("");
+}
+
+function copyList(){
+  const t=I18N[UILANG], cols=targetLangs;
+  const head=`| Species | Wikidata | ${cols.join(" | ")} |\n|---|---|${cols.map(()=>"---").join("|")}|`;
+  const rows=lastMissing.map(e=>`| *${e.name}* | [${e.wd}](https://www.wikidata.org/wiki/${e.wd}) | `+
+    cols.map(l=>e.has[l]?"✅":`[❌](${createUrl(e.name,l)})`).join(" | ")+" |");
+  const md=`# WikiBlitz worklist\n\nMissing-article check across: ${cols.join(", ")}\n\n${head}\n${rows.join("\n")}\n`;
+  navigator.clipboard.writeText(md).then(()=>{const b=$("copy");b.textContent=t.copied;setTimeout(()=>b.textContent=t.copy,1500);});
+}
+
+/* ---------------- wiring ---------------- */
+document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  tab.classList.add("active"); mode=tab.dataset.mode;
+  $("fieldTaxon").style.display=mode==="taxon"?"":"none";
+  $("fieldCountry").style.display=mode==="country"?"":"none";
+  $("fieldProject").style.display=mode==="project"?"":"none";
+  $("fieldUser").style.display=mode==="user"?"":"none";
+  $("fieldArea").style.display=mode==="area"?"":"none";
+  $("fieldAreaTaxon").style.display=mode==="area"?"":"none";
+  if(summaryEl.style.display!=="flex") statusEl.textContent = mode==="area"?I18N[UILANG].areaHint:I18N[UILANG].pick;
+});
+$("run").onclick=run;
+$("copy").onclick=copyList;
+$("targetChips").onclick=e=>{const x=e.target.closest('span[data-l]');if(!x)return;
+  if(targetLangs.length<=1)return; targetLangs=targetLangs.filter(l=>l!==x.dataset.l); renderTargetChips(); fillAddLang();};
+$("addLang").onchange=()=>{const v=$("addLang").value; if(v&&!targetLangs.includes(v)){targetLangs.push(v);renderTargetChips();fillAddLang();}};
+$("uilang").onchange=()=>{UILANG=$("uilang").value;rebuildNames();
+  fillLangSelect($("uilang"),UILANG);fillCountries();renderTargetChips();fillAddLang();applyI18n();};
+
+fillLangSelect($("uilang"),UILANG);
+fillCountries();
+renderTargetChips();
+fillAddLang();
+applyI18n();
+</script>
+</body>
+</html>
