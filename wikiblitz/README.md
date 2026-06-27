@@ -1,9 +1,11 @@
 # WikiBlitz finder — species missing a Wikipedia article
 
-A single-page tool for Wikipedia curators: pick a **scope**, pick a **target Wikipedia
-language**, and get a worklist of species that have a **Wikidata item but no article in
-that language edition** — ready to create or translate. Built to power *wiki-blitzes*
-(focused editing events).
+➡️ **Live:** https://wikiproject-biodiversity.github.io/wikiblitz/
+
+A single-page tool for Wikipedia curators: pick a **scope**, pick one or more **target
+Wikipedia languages**, and get a worklist of species that have a **Wikidata item but no
+article in that language edition** — ready to create or translate. Built to power
+*wiki-blitzes* (focused editing events).
 
 Everything runs live in the browser against public endpoints — no backend, no key, no login.
 
