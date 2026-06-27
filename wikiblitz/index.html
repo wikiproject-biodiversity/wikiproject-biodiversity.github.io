@@ -47,7 +47,10 @@
   .pill.have{background:#22332a;color:#9fd7b6}
   #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;padding:18px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
-  .card .ph{height:140px;background:#10151c center/cover no-repeat;display:flex;align-items:center;justify-content:center;color:#566; font-size:12px}
+  .card .ph{height:140px;background:#10151c center/cover no-repeat;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;color:#7a8694;font-size:12px;text-align:center;padding:0 10px}
+  .card a.ph{text-decoration:none}
+  .card a.ph .find{color:#e08a5a;font-weight:600}
+  .card a.ph:hover .find{text-decoration:underline}
   .card .body{padding:10px 12px;display:flex;flex-direction:column;gap:8px}
   .card .nm{font-style:italic;font-weight:600;font-size:14px;line-height:1.25}
   .card .cnt{font-size:11.5px;color:var(--muted)}
@@ -123,7 +126,7 @@ const I18N={
    scoping:"Gathering taxa…",checking:"{n} taxa in scope — checking Wikipedia…",
    result:"<b>{missing}</b> of {withItem} taxa miss an article in ≥1 chosen language",have:"{have} have them all",noItem:"{n} have no Wikidata item yet",
    capped:"scope capped at {n}",nothing:"Every taxon in this scope already has all chosen languages 🎉",empty:"No taxa found for this scope.",
-   create:"Create",translate:"Translate",wd:"Wikidata",noImg:"no image",err:"Failed: {m}",
+   create:"Create",translate:"Translate",wd:"Wikidata",noImg:"no image",findImg:"Find image (Tarsier)",err:"Failed: {m}",
    pickTaxon:"Pick a taxon from the suggestions first.",pickProject:"Pick a project from the suggestions first.",pickUser:"Pick an iNaturalist user first.",pickArea:"Pick an area from the suggestions first.",
    areaHint:"Tip: pick a focused taxon (a family/order) — very large groups like all birds may time out.",occ:"{n} records",
    foot:"Data: GBIF · Wikidata · iNaturalist · OpenStreetMap, via the QLever SPARQL endpoints. Missing-article = a Wikidata item (P846/P3151) with no sitelink to a chosen Wikipedia edition."},
@@ -134,7 +137,7 @@ const I18N={
    scoping:"Taxa verzamelen…",checking:"{n} taxa in bereik — Wikipedia controleren…",
    result:"<b>{missing}</b> van {withItem} taxa missen een artikel in ≥1 gekozen taal",have:"{have} hebben ze allemaal",noItem:"{n} hebben nog geen Wikidata-item",
    capped:"bereik beperkt tot {n}",nothing:"Elk taxon in dit bereik heeft al alle gekozen talen 🎉",empty:"Geen taxa gevonden voor dit bereik.",
-   create:"Aanmaken",translate:"Vertalen",wd:"Wikidata",noImg:"geen afbeelding",err:"Mislukt: {m}",
+   create:"Aanmaken",translate:"Vertalen",wd:"Wikidata",noImg:"geen afbeelding",findImg:"Zoek afbeelding (Tarsier)",err:"Mislukt: {m}",
    pickTaxon:"Kies eerst een taxon uit de suggesties.",pickProject:"Kies eerst een project uit de suggesties.",pickUser:"Kies eerst een iNaturalist-gebruiker.",pickArea:"Kies eerst een gebied uit de suggesties.",
    areaHint:"Tip: kies een afgebakend taxon (familie/orde) — heel grote groepen zoals alle vogels kunnen aflopen in een time-out.",occ:"{n} waarnemingen",
    foot:"Gegevens: GBIF · Wikidata · iNaturalist · OpenStreetMap, via de QLever-SPARQL-endpoints. Ontbrekend artikel = een Wikidata-item (P846/P3151) zonder sitelink naar een gekozen Wikipedia-editie."},
@@ -145,7 +148,7 @@ const I18N={
    scoping:"Collecte des taxons…",checking:"{n} taxons — vérification de Wikipédia…",
    result:"<b>{missing}</b> taxons sur {withItem} n’ont pas d’article dans ≥1 langue choisie",have:"{have} les ont toutes",noItem:"{n} n’ont pas encore d’élément Wikidata",
    capped:"périmètre limité à {n}",nothing:"Tous les taxons de ce périmètre ont déjà toutes les langues choisies 🎉",empty:"Aucun taxon trouvé pour ce périmètre.",
-   create:"Créer",translate:"Traduire",wd:"Wikidata",noImg:"pas d’image",err:"Échec : {m}",
+   create:"Créer",translate:"Traduire",wd:"Wikidata",noImg:"pas d’image",findImg:"Trouver une image (Tarsier)",err:"Échec : {m}",
    pickTaxon:"Choisissez d’abord un taxon dans les suggestions.",pickProject:"Choisissez d’abord un projet dans les suggestions.",pickUser:"Choisissez d’abord un utilisateur iNaturalist.",pickArea:"Choisissez d’abord une zone dans les suggestions.",
    areaHint:"Astuce : choisissez un taxon ciblé (famille/ordre) — les très grands groupes comme tous les oiseaux peuvent expirer.",occ:"{n} observations",
    foot:"Données : GBIF · Wikidata · iNaturalist · OpenStreetMap, via les points SPARQL QLever. Article manquant = un élément Wikidata (P846/P3151) sans lien vers une édition Wikipédia choisie."},
@@ -156,7 +159,7 @@ const I18N={
    scoping:"Taxa werden gesammelt…",checking:"{n} Taxa — Wikipedia wird geprüft…",
    result:"<b>{missing}</b> von {withItem} Taxa fehlt ein Artikel in ≥1 gewählten Sprache",have:"{have} haben alle",noItem:"{n} haben noch kein Wikidata-Objekt",
    capped:"Bereich auf {n} begrenzt",nothing:"Jedes Taxon in diesem Bereich hat bereits alle gewählten Sprachen 🎉",empty:"Keine Taxa für diesen Bereich gefunden.",
-   create:"Anlegen",translate:"Übersetzen",wd:"Wikidata",noImg:"kein Bild",err:"Fehlgeschlagen: {m}",
+   create:"Anlegen",translate:"Übersetzen",wd:"Wikidata",noImg:"kein Bild",findImg:"Bild finden (Tarsier)",err:"Fehlgeschlagen: {m}",
    pickTaxon:"Wähle zuerst ein Taxon aus den Vorschlägen.",pickProject:"Wähle zuerst ein Projekt aus den Vorschlägen.",pickUser:"Wähle zuerst einen iNaturalist-Nutzer.",pickArea:"Wähle zuerst ein Gebiet aus den Vorschlägen.",
    areaHint:"Tipp: Wähle ein eng gefasstes Taxon (Familie/Ordnung) — sehr große Gruppen wie alle Vögel können in eine Zeitüberschreitung laufen.",occ:"{n} Nachweise",
    foot:"Daten: GBIF · Wikidata · iNaturalist · OpenStreetMap, über die QLever-SPARQL-Endpunkte. Fehlender Artikel = ein Wikidata-Objekt (P846/P3151) ohne Sitelink zu einer gewählten Wikipedia-Ausgabe."},
@@ -167,7 +170,7 @@ const I18N={
    scoping:"Reuniendo taxones…",checking:"{n} taxones — comprobando Wikipedia…",
    result:"<b>{missing}</b> de {withItem} taxones les falta un artículo en ≥1 idioma elegido",have:"{have} los tienen todos",noItem:"{n} aún no tienen elemento de Wikidata",
    capped:"ámbito limitado a {n}",nothing:"Todos los taxones de este ámbito ya tienen todos los idiomas elegidos 🎉",empty:"No se encontraron taxones para este ámbito.",
-   create:"Crear",translate:"Traducir",wd:"Wikidata",noImg:"sin imagen",err:"Falló: {m}",
+   create:"Crear",translate:"Traducir",wd:"Wikidata",noImg:"sin imagen",findImg:"Buscar imagen (Tarsier)",err:"Falló: {m}",
    pickTaxon:"Elige primero un taxón de las sugerencias.",pickProject:"Elige primero un proyecto de las sugerencias.",pickUser:"Elige primero un usuario de iNaturalist.",pickArea:"Elige primero un área de las sugerencias.",
    areaHint:"Consejo: elige un taxón acotado (familia/orden) — grupos muy grandes como todas las aves pueden agotar el tiempo.",occ:"{n} registros",
    foot:"Datos: GBIF · Wikidata · iNaturalist · OpenStreetMap, mediante los puntos SPARQL de QLever. Artículo faltante = un elemento de Wikidata (P846/P3151) sin enlace a una edición de Wikipedia elegida."},
@@ -178,7 +181,7 @@ const I18N={
    scoping:"Raccolta dei taxa…",checking:"{n} taxa — controllo di Wikipedia…",
    result:"<b>{missing}</b> taxa su {withItem} mancano di una voce in ≥1 lingua scelta",have:"{have} le hanno tutte",noItem:"{n} non hanno ancora un elemento Wikidata",
    capped:"ambito limitato a {n}",nothing:"Ogni taxon di questo ambito ha già tutte le lingue scelte 🎉",empty:"Nessun taxon trovato per questo ambito.",
-   create:"Crea",translate:"Traduci",wd:"Wikidata",noImg:"nessuna immagine",err:"Non riuscito: {m}",
+   create:"Crea",translate:"Traduci",wd:"Wikidata",noImg:"nessuna immagine",findImg:"Trova immagine (Tarsier)",err:"Non riuscito: {m}",
    pickTaxon:"Scegli prima un taxon dai suggerimenti.",pickProject:"Scegli prima un progetto dai suggerimenti.",pickUser:"Scegli prima un utente iNaturalist.",pickArea:"Scegli prima un’area dai suggerimenti.",
    areaHint:"Suggerimento: scegli un taxon mirato (famiglia/ordine) — gruppi molto grandi come tutti gli uccelli possono andare in timeout.",occ:"{n} record",
    foot:"Dati: GBIF · Wikidata · iNaturalist · OpenStreetMap, tramite gli endpoint SPARQL di QLever. Voce mancante = un elemento Wikidata (P846/P3151) senza sitelink a un’edizione di Wikipedia scelta."},
@@ -189,7 +192,7 @@ const I18N={
    scoping:"A reunir táxons…",checking:"{n} táxons — a verificar a Wikipédia…",
    result:"<b>{missing}</b> de {withItem} táxons faltam um artigo em ≥1 idioma escolhido",have:"{have} têm todos",noItem:"{n} ainda não têm item na Wikidata",
    capped:"âmbito limitado a {n}",nothing:"Todos os táxons deste âmbito já têm todos os idiomas escolhidos 🎉",empty:"Nenhum táxon encontrado para este âmbito.",
-   create:"Criar",translate:"Traduzir",wd:"Wikidata",noImg:"sem imagem",err:"Falhou: {m}",
+   create:"Criar",translate:"Traduzir",wd:"Wikidata",noImg:"sem imagem",findImg:"Encontrar imagem (Tarsier)",err:"Falhou: {m}",
    pickTaxon:"Escolha primeiro um táxon nas sugestões.",pickProject:"Escolha primeiro um projeto nas sugestões.",pickUser:"Escolha primeiro um utilizador do iNaturalist.",pickArea:"Escolha primeiro uma área nas sugestões.",
    areaHint:"Dica: escolha um táxon focado (família/ordem) — grupos muito grandes como todas as aves podem expirar.",occ:"{n} registos",
    foot:"Dados: GBIF · Wikidata · iNaturalist · OpenStreetMap, através dos endpoints SPARQL do QLever. Artigo em falta = um item da Wikidata (P846/P3151) sem ligação a uma edição da Wikipédia escolhida."}
@@ -457,7 +460,9 @@ function translateLink(e){
 function renderCards(missing){
   const t=I18N[UILANG];
   gridEl.innerHTML=missing.map(e=>{
-    const img=e.image?`<div class="ph" style="background-image:url('${esc(e.image.replace(/^http:/,'https:'))}?width=300')"></div>`:`<div class="ph">${t.noImg}</div>`;
+    const img=e.image
+      ?`<div class="ph" style="background-image:url('${esc(e.image.replace(/^http:/,'https:'))}?width=300')"></div>`
+      :`<a class="ph" href="https://andrawaag.github.io/tarsier/index.html?qid=${e.wd}" target="_blank" rel="noopener" title="Tarsier — find &amp; upload an openly-licensed image"><span>${t.noImg}</span><span class="find">${t.findImg} ↗</span></a>`;
     const gbif=e.gbif||(/^\d+$/.test(e.key)&&e.key);
     const ids=[`<a href="https://www.wikidata.org/wiki/${e.wd}" target="_blank" rel="noopener">${e.wd}</a>`];
     if(gbif)ids.push(`<a href="https://www.gbif.org/species/${gbif}" target="_blank" rel="noopener">GBIF</a>`);
