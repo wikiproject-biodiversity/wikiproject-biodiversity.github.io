@@ -42,7 +42,7 @@ gaps in one workflow.)
 Every result tile shows the taxon's **GBIF taxonomic status** — *accepted* (green),
 *synonym → accepted name* (amber), or *doubtful / misapplied* (red) — so a curator can
 tell at a glance whether to write a new article or, for a synonym, point a redirect at the
-accepted name. (GBIF scopes are **not** filtered to accepted only, so synonyms surface too.)
+accepted name. (GBIF scopes are **not** filtered to accepted only, so synonyms surface too — a **Hide synonyms** checkbox filters them out when you want an accepted-only list.)
 
 ## Data sources
 
