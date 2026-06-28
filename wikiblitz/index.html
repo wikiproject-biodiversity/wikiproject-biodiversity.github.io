@@ -27,6 +27,7 @@
   button{cursor:pointer}
   button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   button:disabled{opacity:.5;cursor:default}
+  .chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;white-space:nowrap}
   #ctrl{padding:14px 18px;background:#1b222c;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:12px}
   .tabs{display:flex;gap:8px;flex-wrap:wrap}
   .tab{padding:7px 14px;border-radius:999px;border:1px solid var(--line);background:#161c25;color:var(--muted);font-size:13px;cursor:pointer}
@@ -111,6 +112,7 @@
     </div>
     <button class="primary" id="run">Find missing articles</button>
     <button id="copy" disabled>Copy worklist</button>
+    <label class="chk"><input type="checkbox" id="hideSyn"> <span id="hideSynLbl">Hide synonyms</span></label>
   </div>
   <div id="status">Choose a scope and press “Find missing articles”.</div>
 </div>
@@ -125,7 +127,7 @@ const SCOPE_LIMIT=250, PROJECT_LIMIT=200;
 
 /* ---------------- i18n ---------------- */
 const I18N={
- en:{appTitle:"WikiBlitz finder",tagline:"Spot species with no Wikipedia article — fuel for your wiki-blitz",iface:"Interface",gaps:"Find gaps in",
+ en:{hideSyn:"Hide synonyms",appTitle:"WikiBlitz finder",tagline:"Spot species with no Wikipedia article — fuel for your wiki-blitz",iface:"Interface",gaps:"Find gaps in",
    taxon:"Taxon",country:"Country",project:"iNat project",user:"iNat user",area:"Area (OSM)",
    taxonPH:"Taxon name (e.g. Vespidae)…",projectPH:"iNaturalist project…",userPH:"iNaturalist username…",areaPH:"Area — national park, region…",areaTaxonPH:"…within taxon (e.g. Odonata)",
    find:"Find missing articles",copy:"Copy worklist",copied:"Copied ✓",pick:"Choose a scope and press “Find missing articles”.",
@@ -136,7 +138,7 @@ const I18N={
    pickTaxon:"Pick a taxon from the suggestions first.",pickProject:"Pick a project from the suggestions first.",pickUser:"Pick an iNaturalist user first.",pickArea:"Pick an area from the suggestions first.",
    areaHint:"Tip: pick a focused taxon (a family/order) — very large groups like all birds may time out.",occ:"{n} records",
    foot:"Data: GBIF · Wikidata · iNaturalist · OpenStreetMap, via the QLever SPARQL endpoints. Missing-article = a Wikidata item (P846/P3151) with no sitelink to a chosen Wikipedia edition."},
- nl:{appTitle:"WikiBlitz-zoeker",tagline:"Vind soorten zonder Wikipedia-artikel — brandstof voor je wiki-blitz",iface:"Interface",gaps:"Hiaten in",
+ nl:{hideSyn:"Synoniemen verbergen",appTitle:"WikiBlitz-zoeker",tagline:"Vind soorten zonder Wikipedia-artikel — brandstof voor je wiki-blitz",iface:"Interface",gaps:"Hiaten in",
    taxon:"Taxon",country:"Land",project:"iNat-project",user:"iNat-gebruiker",area:"Gebied (OSM)",
    taxonPH:"Taxonnaam (bv. Vespidae)…",projectPH:"iNaturalist-project…",userPH:"iNaturalist-gebruikersnaam…",areaPH:"Gebied — nationaal park, regio…",areaTaxonPH:"…binnen taxon (bv. Odonata)",
    find:"Zoek ontbrekende artikelen",copy:"Kopieer werklijst",copied:"Gekopieerd ✓",pick:"Kies een bereik en klik op “Zoek ontbrekende artikelen”.",
@@ -147,7 +149,7 @@ const I18N={
    pickTaxon:"Kies eerst een taxon uit de suggesties.",pickProject:"Kies eerst een project uit de suggesties.",pickUser:"Kies eerst een iNaturalist-gebruiker.",pickArea:"Kies eerst een gebied uit de suggesties.",
    areaHint:"Tip: kies een afgebakend taxon (familie/orde) — heel grote groepen zoals alle vogels kunnen aflopen in een time-out.",occ:"{n} waarnemingen",
    foot:"Gegevens: GBIF · Wikidata · iNaturalist · OpenStreetMap, via de QLever-SPARQL-endpoints. Ontbrekend artikel = een Wikidata-item (P846/P3151) zonder sitelink naar een gekozen Wikipedia-editie."},
- fr:{appTitle:"Détecteur de WikiBlitz",tagline:"Repérez les espèces sans article Wikipédia — pour vos wiki-blitz",iface:"Interface",gaps:"Lacunes en",
+ fr:{hideSyn:"Masquer les synonymes",appTitle:"Détecteur de WikiBlitz",tagline:"Repérez les espèces sans article Wikipédia — pour vos wiki-blitz",iface:"Interface",gaps:"Lacunes en",
    taxon:"Taxon",country:"Pays",project:"Projet iNat",user:"Utilisateur iNat",area:"Zone (OSM)",
    taxonPH:"Nom de taxon (p. ex. Vespidae)…",projectPH:"Projet iNaturalist…",userPH:"Nom d’utilisateur iNaturalist…",areaPH:"Zone — parc national, région…",areaTaxonPH:"…dans le taxon (p. ex. Odonata)",
    find:"Trouver les articles manquants",copy:"Copier la liste",copied:"Copié ✓",pick:"Choisissez un périmètre puis cliquez sur « Trouver les articles manquants ».",
@@ -158,7 +160,7 @@ const I18N={
    pickTaxon:"Choisissez d’abord un taxon dans les suggestions.",pickProject:"Choisissez d’abord un projet dans les suggestions.",pickUser:"Choisissez d’abord un utilisateur iNaturalist.",pickArea:"Choisissez d’abord une zone dans les suggestions.",
    areaHint:"Astuce : choisissez un taxon ciblé (famille/ordre) — les très grands groupes comme tous les oiseaux peuvent expirer.",occ:"{n} observations",
    foot:"Données : GBIF · Wikidata · iNaturalist · OpenStreetMap, via les points SPARQL QLever. Article manquant = un élément Wikidata (P846/P3151) sans lien vers une édition Wikipédia choisie."},
- de:{appTitle:"WikiBlitz-Finder",tagline:"Arten ohne Wikipedia-Artikel finden — Treibstoff für deinen Wiki-Blitz",iface:"Oberfläche",gaps:"Lücken in",
+ de:{hideSyn:"Synonyme ausblenden",appTitle:"WikiBlitz-Finder",tagline:"Arten ohne Wikipedia-Artikel finden — Treibstoff für deinen Wiki-Blitz",iface:"Oberfläche",gaps:"Lücken in",
    taxon:"Taxon",country:"Land",project:"iNat-Projekt",user:"iNat-Nutzer",area:"Gebiet (OSM)",
    taxonPH:"Taxonname (z. B. Vespidae)…",projectPH:"iNaturalist-Projekt…",userPH:"iNaturalist-Benutzername…",areaPH:"Gebiet — Nationalpark, Region…",areaTaxonPH:"…innerhalb Taxon (z. B. Odonata)",
    find:"Fehlende Artikel finden",copy:"Arbeitsliste kopieren",copied:"Kopiert ✓",pick:"Bereich wählen und auf „Fehlende Artikel finden“ klicken.",
@@ -169,7 +171,7 @@ const I18N={
    pickTaxon:"Wähle zuerst ein Taxon aus den Vorschlägen.",pickProject:"Wähle zuerst ein Projekt aus den Vorschlägen.",pickUser:"Wähle zuerst einen iNaturalist-Nutzer.",pickArea:"Wähle zuerst ein Gebiet aus den Vorschlägen.",
    areaHint:"Tipp: Wähle ein eng gefasstes Taxon (Familie/Ordnung) — sehr große Gruppen wie alle Vögel können in eine Zeitüberschreitung laufen.",occ:"{n} Nachweise",
    foot:"Daten: GBIF · Wikidata · iNaturalist · OpenStreetMap, über die QLever-SPARQL-Endpunkte. Fehlender Artikel = ein Wikidata-Objekt (P846/P3151) ohne Sitelink zu einer gewählten Wikipedia-Ausgabe."},
- es:{appTitle:"Buscador WikiBlitz",tagline:"Detecta especies sin artículo en Wikipedia — combustible para tu wiki-blitz",iface:"Interfaz",gaps:"Vacíos en",
+ es:{hideSyn:"Ocultar sinónimos",appTitle:"Buscador WikiBlitz",tagline:"Detecta especies sin artículo en Wikipedia — combustible para tu wiki-blitz",iface:"Interfaz",gaps:"Vacíos en",
    taxon:"Taxón",country:"País",project:"Proyecto iNat",user:"Usuario iNat",area:"Área (OSM)",
    taxonPH:"Nombre de taxón (p. ej. Vespidae)…",projectPH:"Proyecto de iNaturalist…",userPH:"Usuario de iNaturalist…",areaPH:"Área — parque nacional, región…",areaTaxonPH:"…dentro del taxón (p. ej. Odonata)",
    find:"Buscar artículos faltantes",copy:"Copiar lista",copied:"Copiado ✓",pick:"Elige un ámbito y pulsa «Buscar artículos faltantes».",
@@ -180,7 +182,7 @@ const I18N={
    pickTaxon:"Elige primero un taxón de las sugerencias.",pickProject:"Elige primero un proyecto de las sugerencias.",pickUser:"Elige primero un usuario de iNaturalist.",pickArea:"Elige primero un área de las sugerencias.",
    areaHint:"Consejo: elige un taxón acotado (familia/orden) — grupos muy grandes como todas las aves pueden agotar el tiempo.",occ:"{n} registros",
    foot:"Datos: GBIF · Wikidata · iNaturalist · OpenStreetMap, mediante los puntos SPARQL de QLever. Artículo faltante = un elemento de Wikidata (P846/P3151) sin enlace a una edición de Wikipedia elegida."},
- it:{appTitle:"Cercatore WikiBlitz",tagline:"Individua le specie senza voce su Wikipedia — carburante per il tuo wiki-blitz",iface:"Interfaccia",gaps:"Lacune in",
+ it:{hideSyn:"Nascondi sinonimi",appTitle:"Cercatore WikiBlitz",tagline:"Individua le specie senza voce su Wikipedia — carburante per il tuo wiki-blitz",iface:"Interfaccia",gaps:"Lacune in",
    taxon:"Taxon",country:"Paese",project:"Progetto iNat",user:"Utente iNat",area:"Area (OSM)",
    taxonPH:"Nome del taxon (es. Vespidae)…",projectPH:"Progetto iNaturalist…",userPH:"Nome utente iNaturalist…",areaPH:"Area — parco nazionale, regione…",areaTaxonPH:"…entro il taxon (es. Odonata)",
    find:"Trova voci mancanti",copy:"Copia elenco",copied:"Copiato ✓",pick:"Scegli un ambito e premi «Trova voci mancanti».",
@@ -191,7 +193,7 @@ const I18N={
    pickTaxon:"Scegli prima un taxon dai suggerimenti.",pickProject:"Scegli prima un progetto dai suggerimenti.",pickUser:"Scegli prima un utente iNaturalist.",pickArea:"Scegli prima un’area dai suggerimenti.",
    areaHint:"Suggerimento: scegli un taxon mirato (famiglia/ordine) — gruppi molto grandi come tutti gli uccelli possono andare in timeout.",occ:"{n} record",
    foot:"Dati: GBIF · Wikidata · iNaturalist · OpenStreetMap, tramite gli endpoint SPARQL di QLever. Voce mancante = un elemento Wikidata (P846/P3151) senza sitelink a un’edizione di Wikipedia scelta."},
- pt:{appTitle:"Localizador WikiBlitz",tagline:"Encontre espécies sem artigo na Wikipédia — combustível para o seu wiki-blitz",iface:"Interface",gaps:"Lacunas em",
+ pt:{hideSyn:"Ocultar sinónimos",appTitle:"Localizador WikiBlitz",tagline:"Encontre espécies sem artigo na Wikipédia — combustível para o seu wiki-blitz",iface:"Interface",gaps:"Lacunas em",
    taxon:"Táxon",country:"País",project:"Projeto iNat",user:"Utilizador iNat",area:"Área (OSM)",
    taxonPH:"Nome do táxon (ex. Vespidae)…",projectPH:"Projeto do iNaturalist…",userPH:"Utilizador do iNaturalist…",areaPH:"Área — parque nacional, região…",areaTaxonPH:"…dentro do táxon (ex. Odonata)",
    find:"Encontrar artigos em falta",copy:"Copiar lista",copied:"Copiado ✓",pick:"Escolha um âmbito e clique em «Encontrar artigos em falta».",
@@ -222,7 +224,7 @@ const COUNTRIES="AD AE AF AG AL AM AO AR AT AU AZ BA BB BD BE BF BG BH BI BJ BN 
 const $=id=>document.getElementById(id);
 const statusEl=$("status"), summaryEl=$("summary"), gridEl=$("grid");
 let mode="taxon", selTaxon=null, selProject=null, selUser=null, selArea=null, selAreaTaxon=null;
-let lastMissing=[];
+let lastMissing=[], lastVisible=[], lastRun=null;
 const safe=l=>l.replace(/[^a-z0-9]/gi,'_');
 
 function fillLangSelect(s,sel){
@@ -254,7 +256,7 @@ function applyI18n(){
   $("tabTaxon").textContent=t.taxon;$("tabCountry").textContent=t.country;$("tabProject").textContent=t.project;$("tabUser").textContent=t.user;$("tabArea").textContent=t.area;
   $("taxonInput").placeholder=t.taxonPH;$("projectInput").placeholder=t.projectPH;$("userInput").placeholder=t.userPH;
   $("areaInput").placeholder=t.areaPH;$("areaTaxonInput").placeholder=t.areaTaxonPH;
-  $("run").textContent=t.find;$("copy").textContent=t.copy;
+  $("run").textContent=t.find;$("copy").textContent=t.copy;$("hideSynLbl").textContent=t.hideSyn;
   $("foot").textContent=t.foot;
   if(summaryEl.style.display!=="flex") statusEl.textContent = mode==="area"?t.areaHint:t.pick;
 }
@@ -455,14 +457,24 @@ async function run(){
     const gids=[...new Set(missing.map(m=>m.gbifId).filter(Boolean))];
     if(gids.length){ try{ const st=await fetchStatus(gids); missing.forEach(m=>{ const s=st[m.gbifId]; if(s){ m.status=s.status; m.accName=s.accName; } }); }catch(e){} }
     lastMissing=missing;
-    renderSummary({missing:missing.length,withItem,have,noItem,capped,perLang});
-    renderCards(missing);
+    lastRun={withItem,have,noItem,capped};
+    applyFilter();
     statusEl.textContent="";
     $("copy").disabled=missing.length===0;
   }catch(e){ statusEl.textContent=fmt(t.err,{m:e.message}); }
   $("run").disabled=false;
 }
 
+function applyFilter(){
+  const hide=$("hideSyn").checked;
+  const vis = hide ? lastMissing.filter(m=>!(m.status && /ynonym/.test(m.status))) : lastMissing;
+  lastVisible=vis;
+  const perLang={}; targetLangs.forEach(l=>perLang[l]=0);
+  vis.forEach(m=>m.missLangs.forEach(l=>perLang[l]++));
+  renderSummary({missing:vis.length,withItem:lastRun.withItem,have:lastRun.have,noItem:lastRun.noItem,capped:lastRun.capped,perLang});
+  renderCards(vis);
+  $("copy").disabled=vis.length===0;
+}
 function renderSummary({missing,withItem,have,noItem,capped,perLang}){
   const t=I18N[UILANG];
   let h=`<span>${fmt(t.result,{missing,withItem})}</span>`;
@@ -523,7 +535,7 @@ function copyList(){
   const t=I18N[UILANG], cols=targetLangs;
   const st=e=>e.status?(e.status+((e.status!=="accepted"&&e.accName)?(" → "+e.accName):"")):"";
   const head=`| Species | Status | Wikidata | ${cols.join(" | ")} |\n|---|---|---|${cols.map(()=>"---").join("|")}|`;
-  const rows=lastMissing.map(e=>`| *${e.name}* | ${st(e)} | [${e.wd}](https://www.wikidata.org/wiki/${e.wd}) | `+
+  const rows=lastVisible.map(e=>`| *${e.name}* | ${st(e)} | [${e.wd}](https://www.wikidata.org/wiki/${e.wd}) | `+
     cols.map(l=>e.has[l]?"✅":`[❌](${createUrl(e.name,l)})`).join(" | ")+" |");
   const md=`# WikiBlitz worklist\n\nMissing-article check across: ${cols.join(", ")}\n\n${head}\n${rows.join("\n")}\n`;
   navigator.clipboard.writeText(md).then(()=>{const b=$("copy");b.textContent=t.copied;setTimeout(()=>b.textContent=t.copy,1500);});
@@ -543,6 +555,7 @@ document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{
 });
 $("run").onclick=run;
 $("copy").onclick=copyList;
+$("hideSyn").onchange=()=>{ if(lastRun) applyFilter(); };
 $("targetChips").onclick=e=>{const x=e.target.closest('span[data-l]');if(!x)return;
   if(targetLangs.length<=1)return; targetLangs=targetLangs.filter(l=>l!==x.dataset.l); renderTargetChips(); fillAddLang();};
 $("addLang").onchange=()=>{const v=$("addLang").value; if(v&&!targetLangs.includes(v)){targetLangs.push(v);renderTargetChips();fillAddLang();}};
