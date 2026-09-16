@@ -590,13 +590,14 @@ function editUrl(lang, title) {
 // ---------- Propose QuickStatements for a missing Wikidata item ----------
 // For a taxon that resolveWikidata() couldn't find (t.wikidata === null), draft a
 // QuickStatements v1 batch that would CREATE it, sourced from the linked databases
-// this dashboard already talks to: iNaturalist (rank, ancestor chain, taxon id) and
-// GBIF (backbone taxon id, via a name match since there's no Wikidata item to have
-// carried it). This is a DRAFT — reviewed and run by a human via quickstatements.toolforge.org,
-// never submitted by this page itself.
+// this dashboard already talks to: iNaturalist (rank, ancestor chain, taxon id), GBIF
+// (backbone taxon id, via a name match since there's no Wikidata item to have carried
+// it) and NCBI Taxonomy (taxid, same reasoning). This is a DRAFT — reviewed and run by
+// a human via quickstatements.toolforge.org, never submitted by this page itself.
 
 const QS_REF_INATURALIST = 'Q16958215'; // "stated in" target for iNaturalist-sourced claims
 const QS_REF_GBIF = 'Q1531570'; // "stated in" target for GBIF-sourced claims
+const QS_REF_NCBI = 'Q82494'; // "stated in" target for NCBI Taxonomy-sourced claims
 
 function qsString(s) {
   return JSON.stringify(s); // QuickStatements string literals use the same "…" + backslash escaping as JSON
@@ -608,6 +609,42 @@ async function fetchGbifMatch(name) {
   });
   if (!res.ok) throw new Error(`GBIF species/match HTTP ${res.status}`);
   return res.json();
+}
+
+// GBIF's match result carries the parent's own backbone id directly (genusKey for a
+// species, familyKey for a genus, …) — a stable-id join against Wikidata's P846 is far
+// more reliable than matching the parent's name as a string.
+const GBIF_PARENT_KEY_FIELD = {
+  species: 'genusKey', subspecies: 'speciesKey', variety: 'speciesKey', form: 'speciesKey',
+  genus: 'familyKey', subgenus: 'genusKey',
+  family: 'orderKey', subfamily: 'familyKey', tribe: 'familyKey', subtribe: 'familyKey',
+  order: 'classKey', suborder: 'orderKey',
+  class: 'phylumKey', subclass: 'classKey',
+  phylum: 'kingdomKey', subphylum: 'phylumKey',
+};
+
+// NCBI Taxonomy's esearch, scoped to the "scientific name" field so an ambiguous common
+// name never silently matches the wrong lineage; only returns an id on an unambiguous hit.
+async function fetchNcbiTaxonId(name) {
+  const res = await fetch(
+    `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=taxonomy&retmode=json` +
+    `&term=${encodeURIComponent(`${name}[scientific name]`)}`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!res.ok) throw new Error(`NCBI esearch HTTP ${res.status}`);
+  const json = await res.json();
+  const ids = (json.esearchresult && json.esearchresult.idlist) || [];
+  return ids.length === 1 ? ids[0] : null;
+}
+
+async function resolveWikidataByExternalId(prop, value) {
+  const rows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?wdTaxon WHERE { ?wdTaxon wdt:${prop} ${sparqlStringLiteral(String(value))} } LIMIT 1`,
+    QLEVER_ENDPOINT,
+    { label: `Wikidata lookup by ${prop}=${value}` }
+  );
+  return rows.length ? rows[0].wdTaxon.split('/').pop() : null;
 }
 
 // Wikidata's items for each taxonomic rank (Q7432 = species, Q34740 = genus, …), built
@@ -665,17 +702,29 @@ SELECT ?rank (COUNT(?item) AS ?n) WHERE {
   return rankQidsPromise;
 }
 
-// Best-effort: does the immediate parent taxon already have a Wikidata item? (Often yes
-// even when the taxon itself doesn't — Wikidata's taxonomic backbone runs deep.) Takes
-// the first match; good enough for a draft, not guaranteed unambiguous.
-async function resolveParentWikidataQid(parentName) {
-  const rows = await sparqlViaComunica(
-    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
-SELECT ?wdTaxon WHERE { ?wdTaxon wdt:P225 ${sparqlStringLiteral(parentName)} } LIMIT 1`,
-    QLEVER_ENDPOINT,
-    { label: `Parent taxon lookup for "${parentName}"` }
-  );
-  return rows.length ? rows[0].wdTaxon.split('/').pop() : null;
+// Does the immediate parent taxon already have a Wikidata item? (Often yes even when
+// the taxon itself doesn't — Wikidata's taxonomic backbone runs deep.) Tries the two
+// stable-id joins first (GBIF, then NCBI) and only falls back to matching the parent's
+// name as a plain P225 string — the least reliable of the three — if neither has data.
+async function resolveParentTaxon(taxonRank, parent, gbifMatch) {
+  const gbifKeyField = GBIF_PARENT_KEY_FIELD[(taxonRank || '').toLowerCase()];
+  const parentGbifId = gbifMatch && gbifKeyField ? gbifMatch[gbifKeyField] : null;
+  if (parentGbifId) {
+    const qid = await resolveWikidataByExternalId('P846', parentGbifId).catch(() => null);
+    if (qid) return { qid, via: 'gbif', refQid: QS_REF_GBIF };
+  }
+  if (parent) {
+    const parentNcbiId = await fetchNcbiTaxonId(parent.name).catch(() => null);
+    if (parentNcbiId) {
+      const qid = await resolveWikidataByExternalId('P685', parentNcbiId).catch(() => null);
+      if (qid) return { qid, via: 'ncbi', refQid: QS_REF_NCBI };
+    }
+  }
+  if (parent) {
+    const qid = await resolveWikidataByExternalId('P225', parent.name).catch(() => null);
+    if (qid) return { qid, via: 'name', refQid: QS_REF_INATURALIST };
+  }
+  return null;
 }
 
 async function ensureQuickStatementsContext(t) {
@@ -684,12 +733,13 @@ async function ensureQuickStatementsContext(t) {
   const parent = (detail.ancestors && detail.ancestors.length)
     ? detail.ancestors[detail.ancestors.length - 1]
     : null;
-  const [gbifMatch, parentQid, rankQids] = await Promise.all([
+  const [gbifMatch, ncbiTaxonId, rankQids] = await Promise.all([
     fetchGbifMatch(t.name).catch(() => null),
-    parent ? resolveParentWikidataQid(parent.name).catch(() => null) : Promise.resolve(null),
+    fetchNcbiTaxonId(t.name).catch(() => null),
     getTaxonomicRankQids().catch(() => new Map()),
   ]);
-  t._qsContext = { detail, parent, gbifMatch, parentQid, rankQids };
+  const resolvedParent = await resolveParentTaxon(t.rank, parent, gbifMatch).catch(() => null);
+  t._qsContext = { detail, parent, gbifMatch, ncbiTaxonId, resolvedParent, rankQids };
   return t._qsContext;
 }
 
@@ -708,12 +758,15 @@ async function buildQuickStatements(t) {
   lines.push(`LAST\tLen\t${qsString(t.name)}`);
   lines.push(`LAST\tAen\t${qsString(t.name)}`);
   lines.push(`LAST\tDen\t${qsString(description)}`);
-  if (ctx.parentQid) {
-    lines.push(`LAST\tP171\t${ctx.parentQid}\tS248\t${QS_REF_INATURALIST}`);
+  if (ctx.resolvedParent) {
+    lines.push(`LAST\tP171\t${ctx.resolvedParent.qid}\tS248\t${ctx.resolvedParent.refQid}`);
   }
   lines.push(`LAST\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`);
   if (ctx.gbifMatch && ctx.gbifMatch.usageKey && ctx.gbifMatch.matchType && ctx.gbifMatch.matchType !== 'NONE') {
     lines.push(`LAST\tP846\t${qsString(String(ctx.gbifMatch.usageKey))}\tS248\t${QS_REF_GBIF}`);
+  }
+  if (ctx.ncbiTaxonId) {
+    lines.push(`LAST\tP685\t${qsString(String(ctx.ncbiTaxonId))}\tS248\t${QS_REF_NCBI}`);
   }
   return lines.join('\n');
 }
@@ -1034,8 +1087,11 @@ tbody.addEventListener('click', async (e) => {
     box.className = 'bhl-row qs-row';
     box.innerHTML = `<td></td><td colspan="11">
       Proposed QuickStatements to create a Wikidata item for <em>${t.name}</em> — assembled from
-      iNaturalist (rank, ancestor chain, taxon id) and GBIF (backbone taxon id${ctx.gbifMatch && ctx.gbifMatch.usageKey ? `: ${ctx.gbifMatch.usageKey}, ${ctx.gbifMatch.matchType} match` : ': no confident match found'}).
-      ${ctx.parentQid ? `Parent taxon <em>${ctx.parent.name}</em> resolved to <a href="https://www.wikidata.org/wiki/${ctx.parentQid}" target="_blank" rel="noopener">${ctx.parentQid}</a>.` : ctx.parent ? `Parent taxon <em>${ctx.parent.name}</em> has no Wikidata item either — P171 omitted.` : ''}
+      iNaturalist (rank, ancestor chain, taxon id), GBIF (backbone taxon id${ctx.gbifMatch && ctx.gbifMatch.usageKey ? `: ${ctx.gbifMatch.usageKey}, ${ctx.gbifMatch.matchType} match` : ': no confident match found'})
+      and NCBI Taxonomy (taxid${ctx.ncbiTaxonId ? `: ${ctx.ncbiTaxonId}` : ': no unambiguous match found'}).
+      ${ctx.resolvedParent
+        ? `Parent taxon <em>${ctx.parent.name}</em> resolved to <a href="https://www.wikidata.org/wiki/${ctx.resolvedParent.qid}" target="_blank" rel="noopener">${ctx.resolvedParent.qid}</a> (matched via ${ctx.resolvedParent.via === 'gbif' ? 'its GBIF id' : ctx.resolvedParent.via === 'ncbi' ? 'its NCBI taxid' : 'its name'}).`
+        : ctx.parent ? `Parent taxon <em>${ctx.parent.name}</em> has no Wikidata item either — P171 omitted.` : ''}
       Review carefully before running — this is a draft, not checked for existing near-duplicates beyond the exact name match already shown in this row.
       <div class="stub-toolbar">
         <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
