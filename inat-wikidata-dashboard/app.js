@@ -587,6 +587,137 @@ function editUrl(lang, title) {
   return `https://${lang}.wikipedia.org/w/index.php?title=${encodeURIComponent(title)}&action=edit`;
 }
 
+// ---------- Propose QuickStatements for a missing Wikidata item ----------
+// For a taxon that resolveWikidata() couldn't find (t.wikidata === null), draft a
+// QuickStatements v1 batch that would CREATE it, sourced from the linked databases
+// this dashboard already talks to: iNaturalist (rank, ancestor chain, taxon id) and
+// GBIF (backbone taxon id, via a name match since there's no Wikidata item to have
+// carried it). This is a DRAFT — reviewed and run by a human via quickstatements.toolforge.org,
+// never submitted by this page itself.
+
+const QS_REF_INATURALIST = 'Q16958215'; // "stated in" target for iNaturalist-sourced claims
+const QS_REF_GBIF = 'Q1531570'; // "stated in" target for GBIF-sourced claims
+
+function qsString(s) {
+  return JSON.stringify(s); // QuickStatements string literals use the same "…" + backslash escaping as JSON
+}
+
+async function fetchGbifMatch(name) {
+  const res = await fetch(`https://api.gbif.org/v1/species/match?name=${encodeURIComponent(name)}&verbose=false`, {
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`GBIF species/match HTTP ${res.status}`);
+  return res.json();
+}
+
+// Wikidata's items for each taxonomic rank (Q7432 = species, Q34740 = genus, …), built
+// once from live data instead of a hardcoded table: every item that's an instance of
+// "taxonomic rank" (Q427626), keyed by its English label. A couple of labels (e.g.
+// "order") have more than one Wikidata item behind them; the one actually used by
+// thousands of real P105 statements wins over an obscure/legacy duplicate.
+let rankQidsPromise = null;
+function getTaxonomicRankQids() {
+  if (!rankQidsPromise) {
+    rankQidsPromise = (async () => {
+      const rows = await sparqlViaComunica(
+        `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?rank ?label WHERE {
+  ?rank wdt:P31 wd:Q427626 .
+  ?rank rdfs:label ?label .
+  FILTER(lang(?label) = "en")
+}`,
+        QLEVER_ENDPOINT,
+        { label: 'Taxonomic rank items' }
+      );
+      const byLabel = new Map(); // label -> [qid, ...]
+      for (const r of rows) {
+        const qid = r.rank.split('/').pop();
+        const label = r.label.toLowerCase();
+        (byLabel.get(label) || byLabel.set(label, []).get(label)).push(qid);
+      }
+      const ambiguous = [...byLabel.values()].filter(qids => qids.length > 1).flat();
+      const usageCounts = new Map();
+      if (ambiguous.length) {
+        const values = ambiguous.map(q => `wd:${q}`).join(' ');
+        const countRows = await sparqlViaComunica(
+          `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?rank (COUNT(?item) AS ?n) WHERE {
+  VALUES ?rank { ${values} }
+  ?item wdt:P105 ?rank .
+} GROUP BY ?rank`,
+          QLEVER_ENDPOINT,
+          { label: 'Disambiguating taxonomic ranks' }
+        );
+        for (const r of countRows) usageCounts.set(r.rank.split('/').pop(), parseInt(r.n, 10));
+      }
+      const result = new Map();
+      for (const [label, qids] of byLabel) {
+        const best = qids.length === 1 ? qids[0]
+          : qids.reduce((a, b) => (usageCounts.get(b) || 0) > (usageCounts.get(a) || 0) ? b : a);
+        result.set(label, best);
+      }
+      return result;
+    })();
+  }
+  return rankQidsPromise;
+}
+
+// Best-effort: does the immediate parent taxon already have a Wikidata item? (Often yes
+// even when the taxon itself doesn't — Wikidata's taxonomic backbone runs deep.) Takes
+// the first match; good enough for a draft, not guaranteed unambiguous.
+async function resolveParentWikidataQid(parentName) {
+  const rows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?wdTaxon WHERE { ?wdTaxon wdt:P225 ${sparqlStringLiteral(parentName)} } LIMIT 1`,
+    QLEVER_ENDPOINT,
+    { label: `Parent taxon lookup for "${parentName}"` }
+  );
+  return rows.length ? rows[0].wdTaxon.split('/').pop() : null;
+}
+
+async function ensureQuickStatementsContext(t) {
+  if (t._qsContext) return t._qsContext;
+  const detail = await fetchINatTaxonDetail(t.inatId);
+  const parent = (detail.ancestors && detail.ancestors.length)
+    ? detail.ancestors[detail.ancestors.length - 1]
+    : null;
+  const [gbifMatch, parentQid, rankQids] = await Promise.all([
+    fetchGbifMatch(t.name).catch(() => null),
+    parent ? resolveParentWikidataQid(parent.name).catch(() => null) : Promise.resolve(null),
+    getTaxonomicRankQids().catch(() => new Map()),
+  ]);
+  t._qsContext = { detail, parent, gbifMatch, parentQid, rankQids };
+  return t._qsContext;
+}
+
+async function buildQuickStatements(t) {
+  const ctx = await ensureQuickStatementsContext(t);
+  const rankQid = ctx.rankQids.get((t.rank || '').toLowerCase());
+  const descParent = ctx.parent ? ctx.parent.name : '';
+  let description = t.rank || 'taxon';
+  if (descParent) description += ` of ${descParent}`;
+  if (t.commonName) description += ` (${t.commonName})`;
+
+  const lines = ['CREATE'];
+  lines.push(`LAST\tP31\tQ16521`); // instance of: taxon
+  if (rankQid) lines.push(`LAST\tP105\t${rankQid}`); // taxon rank
+  lines.push(`LAST\tP225\t${qsString(t.name)}`); // taxon name
+  lines.push(`LAST\tLen\t${qsString(t.name)}`);
+  lines.push(`LAST\tAen\t${qsString(t.name)}`);
+  lines.push(`LAST\tDen\t${qsString(description)}`);
+  if (ctx.parentQid) {
+    lines.push(`LAST\tP171\t${ctx.parentQid}\tS248\t${QS_REF_INATURALIST}`);
+  }
+  lines.push(`LAST\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`);
+  if (ctx.gbifMatch && ctx.gbifMatch.usageKey && ctx.gbifMatch.matchType && ctx.gbifMatch.matchType !== 'NONE') {
+    lines.push(`LAST\tP846\t${qsString(String(ctx.gbifMatch.usageKey))}\tS248\t${QS_REF_GBIF}`);
+  }
+  return lines.join('\n');
+}
+
 // ---------- UI ----------
 
 const statusEl = document.getElementById('status');
@@ -669,7 +800,7 @@ function renderTable() {
     const photo = t.photo ? `<img class="thumb" src="${t.photo}" alt="">` : `<div class="thumb"></div>`;
     const wd = t.wikidata
       ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
-      : `<span class="pill">not found</span>`;
+      : `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`;
     const gbif = t.wikidata && t.wikidata.gbif
       ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
       : '<span class="pill">—</span>';
@@ -876,6 +1007,52 @@ tbody.addEventListener('click', (e) => {
     const el = document.getElementById(domainId);
     if (el) el.textContent = '· could not check the allow-list right now';
   });
+});
+
+tbody.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.qs-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t) return;
+
+  const row = btn.closest('tr');
+  const qsRow = row.nextElementSibling;
+  if (qsRow && qsRow.classList.contains('qs-row')) {
+    qsRow.remove();
+    return;
+  }
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const commands = await buildQuickStatements(t);
+    const ctx = t._qsContext;
+    const rowId = `qs-${inatId}-${Date.now()}`;
+    const box = document.createElement('tr');
+    box.className = 'bhl-row qs-row';
+    box.innerHTML = `<td></td><td colspan="11">
+      Proposed QuickStatements to create a Wikidata item for <em>${t.name}</em> — assembled from
+      iNaturalist (rank, ancestor chain, taxon id) and GBIF (backbone taxon id${ctx.gbifMatch && ctx.gbifMatch.usageKey ? `: ${ctx.gbifMatch.usageKey}, ${ctx.gbifMatch.matchType} match` : ': no confident match found'}).
+      ${ctx.parentQid ? `Parent taxon <em>${ctx.parent.name}</em> resolved to <a href="https://www.wikidata.org/wiki/${ctx.parentQid}" target="_blank" rel="noopener">${ctx.parentQid}</a>.` : ctx.parent ? `Parent taxon <em>${ctx.parent.name}</em> has no Wikidata item either — P171 omitted.` : ''}
+      Review carefully before running — this is a draft, not checked for existing near-duplicates beyond the exact name match already shown in this row.
+      <div class="stub-toolbar">
+        <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+        <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      </div>
+      <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+    </td>`;
+    row.after(box);
+  } catch (err) {
+    const box = document.createElement('tr');
+    box.className = 'bhl-row qs-row';
+    box.innerHTML = `<td></td><td colspan="11">Could not build QuickStatements: ${err.message}</td>`;
+    row.after(box);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 });
 
 tbody.addEventListener('click', (e) => {
