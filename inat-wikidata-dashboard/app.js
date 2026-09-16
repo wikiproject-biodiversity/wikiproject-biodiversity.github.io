@@ -767,17 +767,26 @@ async function buildQuickStatements(t) {
   lines.push(`LAST\tP31\tQ16521`); // instance of: taxon
   if (rankQid) lines.push(`LAST\tP105\t${rankQid}`); // taxon rank
   lines.push(`LAST\tP225\t${qsString(t.name)}`); // taxon name
+  // `mul` (language-independent) alongside `en`: taxon names are identical across
+  // languages, and Wikidata's "label in language constraint" flags an item with only
+  // one language on it — this is the same en+mul pattern this org's own treatmentbot
+  // uses on the taxa it creates (verified against Q130466854, Cutocoris distinctus).
   lines.push(`LAST\tLen\t${qsString(t.name)}`);
+  lines.push(`LAST\tLmul\t${qsString(t.name)}`);
   lines.push(`LAST\tAen\t${qsString(t.name)}`);
   lines.push(`LAST\tDen\t${qsString(description)}`);
-  // Only write P171 when every lineage that resolved a parent agrees on the same item —
-  // one line per agreeing source, each its own reference on the same statement value.
+  // Only write P171 when every lineage that resolved a parent agrees on the same item,
+  // with every agreeing source as its own separate reference block on that ONE
+  // statement line. Repeating the whole "LAST P171 …" line per source (what this used
+  // to do) instead creates duplicate statements — confirmed the hard way against a real
+  // batch. Plain repeated "S248" pairs on one line would merge into snaks of a *single*
+  // reference instead of separate ones; QuickStatements' documented fix is prefixing
+  // every reference group after the first with "!" instead of "S" to start a new group.
   // Divergent lineages are surfaced in the panel text instead of guessed at here.
   if (ctx.parentByQid.size === 1) {
     const [qid, sources] = [...ctx.parentByQid.entries()][0];
-    for (const c of sources) {
-      lines.push(`LAST\tP171\t${qid}\tS248\t${c.refQid}`);
-    }
+    const refPairs = sources.map((c, i) => `${i === 0 ? 'S' : '!S'}248\t${c.refQid}`).join('\t');
+    lines.push(`LAST\tP171\t${qid}\t${refPairs}`);
   }
   lines.push(`LAST\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`);
   if (ctx.gbifMatch && ctx.gbifMatch.usageKey && ctx.gbifMatch.matchType && ctx.gbifMatch.matchType !== 'NONE') {
