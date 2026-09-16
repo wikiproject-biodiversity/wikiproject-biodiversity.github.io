@@ -82,13 +82,20 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
    - `P31` taxon, `P105` rank (resolved live from Wikidata's own taxonomic-rank items rather than
      a hardcoded table — see `getTaxonomicRankQids()`), `P225`/label/alias = the scientific name.
+   - `P3151` (iNaturalist taxon id), `P846` (GBIF backbone id, from a live `species/match` lookup)
+     and `P685` (NCBI Taxonomy id, from a live `esearch` lookup scoped to `[scientific name]` so an
+     ambiguous common name never silently matches the wrong lineage) — each only added when that
+     database actually returned a confident match.
    - `P171` parent taxon, if the immediate parent (from iNaturalist's ancestor chain) already has
-     its own Wikidata item — resolved with one more Comunica query, same pattern as everywhere
-     else in this tool.
-   - `P3151` (iNaturalist taxon id) and `P846` (GBIF backbone id, from a live
-     `species/match` lookup since there's no existing Wikidata item to have carried it).
-   - Every derived claim (`P171`, `P3151`, `P846`) carries a `stated in` (`P248`) reference back
-     to iNaturalist (Q16958215) or GBIF (Q1531570) — the same referencing convention used by
+     its own Wikidata item. Resolved three ways, in order of reliability, by `resolveParentTaxon()`:
+     first joining GBIF's own id for that ancestor rank (`genusKey`/`familyKey`/… picked by the
+     *child* taxon's rank, not the parent's — get this backwards and you silently resolve to the
+     wrong ancestor, e.g. the family instead of the genus) against Wikidata's `P846`; then the same
+     join against NCBI's taxid via `P685`; only as a last resort, matching the parent's name as a
+     plain `P225` string.
+   - Every derived claim carries a `stated in` (`P248`) reference back to whichever source actually
+     supplied it — iNaturalist (Q16958215), GBIF (Q1531570) or NCBI (Q82494) — the same referencing
+     convention used by
      [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker)'s
      `taxon.py`.
 
