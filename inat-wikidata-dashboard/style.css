@@ -219,6 +219,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); 
 .pill {
   font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim);
 }
+.pill-ok { color: var(--ok); border-color: var(--ok); text-decoration: none; }
+.pill-warn { color: var(--warn-text); }
+
+.image-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; white-space: normal; }
 
 .small-btn {
   font-size: 0.75rem; padding: 4px 9px; background: var(--surface); color: var(--accent); border: 1px solid var(--accent);
@@ -232,7 +236,9 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); 
 
 .bhl-row ul { margin: 6px 0 0; padding-left: 18px; }
 
-.stub-toolbar { margin: 8px 0; display: flex; gap: 8px; }
+.stub-toolbar { margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.stub-toolbar-hint { font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 8px; }
+.upload-btn { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 
 .stub-textarea {
   width: 100%;
