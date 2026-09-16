@@ -6,6 +6,17 @@ const QLEVER_ENDPOINT = 'https://qlever.dev/api/wikidata';
 const WDQS_ENDPOINT = 'https://query.wikidata.org/sparql';
 const BHL_ENDPOINT = 'https://koetai.semscape.org/u/0000-0001-9773-4008/bhl/sparql';
 const PLAZI_ENDPOINT = 'https://qlever.ld.plazi.org/sparql'; // SynoSpecies' QLever mirror of Plazi TreatmentBank
+const COMMONS_ENDPOINT = 'https://qlever.dev/api/wikimedia-commons'; // QLever's Wikimedia Commons structured-data mirror
+
+// iNaturalist license codes that are actually reusable on Commons (public domain / attribution-only).
+// cc-by-nc, cc-by-nd, cc-by-nc-sa, cc-by-nc-nd and "all rights reserved" (null) are NOT Commons-compatible.
+// `template` is for the wikitext preview; `wpLicense` is the exact key Special:Upload's license
+// dropdown expects (same values used by github.com/andrawaag/andrawaag.github.io's Tarsier tool).
+const COMMONS_COMPATIBLE_LICENSES = {
+  'cc0': { template: '{{cc-zero}}', wpLicense: 'Cc-zero' },
+  'cc-by': { template: '{{cc-by-4.0}}', wpLicense: 'cc-by-4.0' },
+  'cc-by-sa': { template: '{{cc-by-sa-4.0}}', wpLicense: 'cc-by-sa-4.0' },
+};
 
 const LANGS = [
   { code: 'en', wiki: 'https://en.wikipedia.org/' },
@@ -131,9 +142,24 @@ async function fetchProjectTaxa(projectSlug, onProgress) {
         photo: t.default_photo ? t.default_photo.square_url : null,
         inatWikipediaUrl: t.wikipedia_url || null,
         obsCount: 0,
+        obsPhoto: null, // first Commons-relevant photo actually attached to an observation *in this project*
       });
     }
-    byTaxon.get(t.id).obsCount++;
+    const entry = byTaxon.get(t.id);
+    entry.obsCount++;
+    if (!entry.obsPhoto && obs.photos && obs.photos.length) {
+      const p = obs.photos[0];
+      entry.obsPhoto = {
+        photoId: p.id,
+        licenseCode: p.license_code, // null = "all rights reserved", not usable
+        squareUrl: p.url,
+        originalUrl: p.url ? p.url.replace(/\/(square|small|medium|large)\./, '/original.') : null,
+        attribution: p.attribution || '',
+        observerLogin: obs.user ? obs.user.login : '',
+        obsUri: obs.uri,
+        inatPhotoUrl: `https://www.inaturalist.org/photos/${p.id}`,
+      };
+    }
   }
   return [...byTaxon.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -270,6 +296,125 @@ LIMIT 20`;
   return sparqlViaComunica(query, PLAZI_ENDPOINT, { label: `Plazi detail for "${genus} ${species}"` });
 }
 
+// ---------- Wikimedia Commons (license check + duplicate check) ----------
+
+// Batch step: for every taxon with a Commons-compatible observation photo, check
+// whether that exact iNaturalist photo has already been uploaded to Commons. Files
+// sourced from iNaturalist carry a "source of file" (P7482) statement whose
+// "described at URL" (P973) qualifier is the https://www.inaturalist.org/photos/<id>
+// page — that's the join key.
+async function resolveCommonsStatus(taxa) {
+  const candidates = taxa.filter(t => t.obsPhoto && COMMONS_COMPATIBLE_LICENSES[t.obsPhoto.licenseCode]);
+  if (candidates.length === 0) return taxa;
+
+  const existing = new Map(); // inatPhotoUrl -> { entity, pageUrl }
+  for (const batch of chunk(candidates, BATCH_SIZE)) {
+    const values = batch.map(t => `<${t.obsPhoto.inatPhotoUrl}>`).join(' ');
+    const query = `PREFIX p: <http://www.wikidata.org/prop/>
+PREFIX pq: <http://www.wikidata.org/prop/qualifier/>
+PREFIX schema: <http://schema.org/>
+SELECT ?url ?file ?contentUrl WHERE {
+  VALUES ?url { ${values} }
+  ?file p:P7482 ?stmt ;
+        schema:contentUrl ?contentUrl .
+  ?stmt pq:P973 ?url .
+}`;
+    const rows = await sparqlViaComunica(query, COMMONS_ENDPOINT, { label: `Commons duplicate check (batch of ${batch.length})` });
+    for (const r of rows) {
+      // schema:contentUrl looks like https://upload.wikimedia.org/wikipedia/commons/1/1b/Filename.jpg
+      const filename = decodeURIComponent(r.contentUrl.split('/').pop());
+      existing.set(r.url, { entity: r.file, pageUrl: `https://commons.wikimedia.org/wiki/File:${filename}` });
+    }
+  }
+
+  for (const t of candidates) {
+    t.obsPhoto.commonsFile = existing.get(t.obsPhoto.inatPhotoUrl) || null;
+  }
+  return taxa;
+}
+
+function suggestedCommonsFilename(t) {
+  const safe = t.name.replace(/[\[\]{}|#<>]/g, '').trim();
+  return `${safe} - iNaturalist ${t.obsPhoto.photoId}.jpg`;
+}
+
+function commonsDescription(t) {
+  const p = t.obsPhoto;
+  const wdRef = t.wikidata ? ` ([[:d:${t.wikidata.qid}]])` : '';
+  return `${t.name}${t.commonName ? ` (${t.commonName})` : ''}, from iNaturalist observation ${p.obsUri}${wdRef}`;
+}
+
+function buildCommonsWikitext(t) {
+  const p = t.obsPhoto;
+  const licenseTemplate = COMMONS_COMPATIBLE_LICENSES[p.licenseCode].template;
+  const category = t.wikidata && t.wikidata.commonsCat ? t.wikidata.commonsCat : t.name;
+  const gbifBlock = t.wikidata && t.wikidata.gbif ? `\n{{Gbif|${t.wikidata.gbif}}}` : '';
+  return `=={{int:filedesc}}==
+{{Information
+| description = {{en|1=${commonsDescription(t)}}}
+| date        =
+| source      = [${p.inatPhotoUrl} iNaturalist photo ${p.photoId}]
+| author      = [https://www.inaturalist.org/people/${encodeURIComponent(p.observerLogin)} ${p.observerLogin}] (via iNaturalist, ${p.attribution})
+| permission  =
+| other versions =
+}}
+
+=={{int:license-header}}==
+${licenseTemplate}
+
+[[Category:${category}]]${gbifBlock}
+<!-- DRAFT — review author/license/category before uploading. Not uploaded automatically. -->`;
+}
+
+// Same Special:Upload prefill pattern used by Tarsier (github.com/andrawaag/andrawaag.github.io/tree/main/tarsier):
+// upload-by-URL works without OAuth as long as the source host is on Commons' live
+// copy-upload domain allow-list, which we check separately (see commonsDomainStatus).
+function buildCommonsUploadUrl(t) {
+  const p = t.obsPhoto;
+  const category = t.wikidata && t.wikidata.commonsCat ? t.wikidata.commonsCat : t.name;
+  const desc = `{{Information\n` +
+    `|description={{en|1=${commonsDescription(t)}}}\n` +
+    `|date=\n` +
+    `|source=[${p.inatPhotoUrl} iNaturalist photo ${p.photoId}]\n` +
+    `|author=[https://www.inaturalist.org/people/${encodeURIComponent(p.observerLogin)} ${p.observerLogin}] (via iNaturalist, ${p.attribution})\n` +
+    `|permission=\n|other versions=\n}}\n\n` +
+    `[[Category:${category}]]\n`;
+  return 'https://commons.wikimedia.org/wiki/Special:Upload' +
+    `?wpUploadDescription=${encodeURIComponent(desc)}` +
+    `&wpLicense=${encodeURIComponent(COMMONS_COMPATIBLE_LICENSES[p.licenseCode].wpLicense)}` +
+    `&wpDestFile=${encodeURIComponent(suggestedCommonsFilename(t))}` +
+    `&wpSourceType=url` +
+    `&wpUploadFileURL=${encodeURIComponent(p.originalUrl)}`;
+}
+
+// Live check against Commons' MediaWiki:Copyupload-allowed-domains — upload-by-URL only
+// actually works from a host on this list; cached for the session since it rarely changes.
+let commonsDomainListPromise = null;
+function loadCommonsDomainList() {
+  if (!commonsDomainListPromise) {
+    commonsDomainListPromise = fetch('https://commons.wikimedia.org/w/api.php?action=query&prop=revisions' +
+      '&titles=MediaWiki:Copyupload-allowed-domains&rvprop=content&rvslots=main&format=json&formatversion=2&origin=*')
+      .then(r => r.json())
+      .then(d => {
+        const txt = d.query.pages[0].revisions[0].slots.main.content;
+        return txt.split('\n').map(l => l.replace(/#.*/, '').trim()).filter(l => l && l[0] !== '<');
+      })
+      .catch(() => { commonsDomainListPromise = null; throw new Error('domain list unavailable'); });
+  }
+  return commonsDomainListPromise;
+}
+function domainMatches(host, pattern) {
+  pattern = pattern.toLowerCase();
+  if (host === pattern) return true;
+  if (pattern.startsWith('*.') && host === pattern.slice(2)) return true;
+  const rx = '^' + pattern.split('*').map(s => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^.]+') + '$';
+  try { return new RegExp(rx).test(host); } catch (e) { return false; }
+}
+async function isCommonsUploadDomainAllowed(host) {
+  const list = await loadCommonsDomainList();
+  return list.some(p => domainMatches(host, p));
+}
+
 // ---------- BHL (on-demand, per taxon) ----------
 
 async function fetchBHL(scientificName) {
@@ -337,6 +482,13 @@ async function ensureStubContext(t) {
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 
+// The bare "Filename.jpg" for a taxon's photo, if it's already on Commons
+// (either matched by resolveCommonsStatus, or freshly prepared this session).
+function commonsImageFilename(t) {
+  const pageUrl = t.obsPhoto && t.obsPhoto.commonsFile && t.obsPhoto.commonsFile.pageUrl;
+  return pageUrl ? decodeURIComponent(pageUrl.split('File:').pop()) : '';
+}
+
 function buildStubEn(t, ctx) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || (ranks.species ? '' : '');
@@ -349,7 +501,7 @@ function buildStubEn(t, ctx) {
   const taxonbar = t.wikidata ? `\n{{Taxonbar|from=${t.wikidata.qid}}}` : '';
 
   return `{{Speciesbox
-| image =
+| image = ${commonsImageFilename(t)}
 | parent = ${parentName}
 | taxon = ${t.name}
 | authority = ${authority}
@@ -369,7 +521,7 @@ function buildStubEs(t, ctx) {
   const authority = (gbif && gbif.authorship) || '';
   const fichaFields = [
     ['nombre', t.name],
-    ['imagen', ''],
+    ['imagen', commonsImageFilename(t)],
     ['reino', ranks.kingdom || ''],
     ['filo', ranks.phylum || ''],
     ['clase', ranks.class || ''],
@@ -398,7 +550,7 @@ function buildStubJa(t, ctx) {
   const authority = (gbif && gbif.authorship) || '';
   const bunruiFields = [
     ['名称', t.commonName || t.name],
-    ['画像', ''],
+    ['画像', commonsImageFilename(t)],
     ['界', ranks.kingdom || ''],
     ['門', ranks.phylum || ''],
     ['綱', ranks.class || ''],
@@ -493,6 +645,22 @@ function langBadge(t, code) {
   return `<button class="badge no stub-btn" data-inat-id="${t.inatId}" data-lang="${code}" title="No ${code} Wikipedia article — click to draft a stub">✗</button>`;
 }
 
+function renderImageCell(t) {
+  const p = t.obsPhoto;
+  if (!p) return '<span class="pill">no photo</span>';
+  const thumb = `<img class="thumb" src="${p.squareUrl}" alt="">`;
+  let status;
+  if (!COMMONS_COMPATIBLE_LICENSES[p.licenseCode]) {
+    const label = p.licenseCode ? p.licenseCode.toUpperCase() : 'all rights reserved';
+    status = `<span class="pill" title="Not Commons-compatible (needs CC0 / CC BY / CC BY-SA)">${label}</span>`;
+  } else if (p.commonsFile) {
+    status = `<a class="pill pill-ok" href="${p.commonsFile.pageUrl}" target="_blank" rel="noopener">on Commons ✓</a>`;
+  } else {
+    status = `<button class="small-btn commons-btn" data-inat-id="${t.inatId}">prepare upload</button>`;
+  }
+  return `<div class="image-cell">${thumb}${status}</div>`;
+}
+
 function renderTable() {
   tbody.innerHTML = '';
   const rows = currentTaxa.filter(matchesFilter);
@@ -513,6 +681,7 @@ function renderTable() {
       : t.plaziCount > 0
         ? `<button class="small-btn plazi-btn" data-genus="${encodeURIComponent(t.plaziGenusSpecies.genus)}" data-species="${encodeURIComponent(t.plaziGenusSpecies.species)}">${t.plaziCount} treatment${t.plaziCount === 1 ? '' : 's'}</button>`
         : '<span class="pill">0</span>';
+    const image = renderImageCell(t);
 
     tr.innerHTML = `
       <td>${photo}</td>
@@ -520,6 +689,7 @@ function renderTable() {
         <span class="taxon-name">${t.name}</span>
         ${t.commonName ? `<span class="taxon-common">${t.commonName}</span>` : ''}
       </td>
+      <td>${image}</td>
       <td><a href="${inatTaxonUrl(t)}" target="_blank" rel="noopener">${t.obsCount} obs.</a></td>
       <td>${wd}</td>
       <td>${gbif}</td>
@@ -553,18 +723,18 @@ tbody.addEventListener('click', async (e) => {
     bhlRow = document.createElement('tr');
     bhlRow.className = 'bhl-row';
     if (results.length === 0) {
-      bhlRow.innerHTML = `<td></td><td colspan="10">No BHL literature found for <em>${name}</em> in this experimental knowledge graph (koetai.semscape.org) — it may simply not be indexed yet.</td>`;
+      bhlRow.innerHTML = `<td></td><td colspan="11">No BHL literature found for <em>${name}</em> in this experimental knowledge graph (koetai.semscape.org) — it may simply not be indexed yet.</td>`;
     } else {
       const items = results.map(r =>
         `<li>${r.date ? `<strong>${r.date}</strong> — ` : ''}${r.title}${r.containerTitle ? ` <em>(${r.containerTitle})</em>` : ''} ${r.part ? `<a href="${r.part}" target="_blank" rel="noopener">↗</a>` : ''}</li>`
       ).join('');
-      bhlRow.innerHTML = `<td></td><td colspan="10">BHL literature mentioning <em>${name}</em> (federated query: BHL graph → Wikidata via QLever → Wikipedia via WDQS):<ul>${items}</ul></td>`;
+      bhlRow.innerHTML = `<td></td><td colspan="11">BHL literature mentioning <em>${name}</em> (federated query: BHL graph → Wikidata via QLever → Wikipedia via WDQS):<ul>${items}</ul></td>`;
     }
     row.after(bhlRow);
   } catch (err) {
     bhlRow = document.createElement('tr');
     bhlRow.className = 'bhl-row';
-    bhlRow.innerHTML = `<td></td><td colspan="10">BHL lookup failed: ${err.message}</td>`;
+    bhlRow.innerHTML = `<td></td><td colspan="11">BHL lookup failed: ${err.message}</td>`;
     row.after(bhlRow);
   } finally {
     btn.disabled = false;
@@ -598,12 +768,12 @@ tbody.addEventListener('click', async (e) => {
       const doiLink = r.doi ? ` <a href="${r.doi}" target="_blank" rel="noopener">↗</a>` : '';
       return `<li>${title}${r.creator ? ` <em>(${r.creator})</em>` : ''}${doiLink}</li>`;
     }).join('');
-    plaziRow.innerHTML = `<td></td><td colspan="10">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul></td>`;
+    plaziRow.innerHTML = `<td></td><td colspan="11">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul></td>`;
     row.after(plaziRow);
   } catch (err) {
     plaziRow = document.createElement('tr');
     plaziRow.className = 'bhl-row plazi-row';
-    plaziRow.innerHTML = `<td></td><td colspan="10">Plazi lookup failed: ${err.message}</td>`;
+    plaziRow.innerHTML = `<td></td><td colspan="11">Plazi lookup failed: ${err.message}</td>`;
     row.after(plaziRow);
   } finally {
     btn.disabled = false;
@@ -634,7 +804,7 @@ tbody.addEventListener('click', async (e) => {
     const box = document.createElement('tr');
     box.className = 'bhl-row stub-row';
     const rowId = `stub-${inatId}-${lang}-${Date.now()}`;
-    box.innerHTML = `<td></td><td colspan="10">
+    box.innerHTML = `<td></td><td colspan="11">
       Draft ${lang} Wikipedia stub for <em>${t.name}</em> — generated from iNaturalist + GBIF + Wikidata,
       similar to <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>.
       Review before publishing.
@@ -648,12 +818,64 @@ tbody.addEventListener('click', async (e) => {
   } catch (err) {
     const box = document.createElement('tr');
     box.className = 'bhl-row stub-row';
-    box.innerHTML = `<td></td><td colspan="10">Could not draft a stub: ${err.message}</td>`;
+    box.innerHTML = `<td></td><td colspan="11">Could not draft a stub: ${err.message}</td>`;
     row.after(box);
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
   }
+});
+
+tbody.addEventListener('click', (e) => {
+  const btn = e.target.closest('.commons-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t || !t.obsPhoto) return;
+
+  const row = btn.closest('tr');
+  const uploadRow = row.nextElementSibling;
+  if (uploadRow && uploadRow.classList.contains('upload-row')) {
+    uploadRow.remove();
+    return;
+  }
+
+  const wikitext = buildCommonsWikitext(t);
+  const filename = suggestedCommonsFilename(t);
+  const uploadUrl = buildCommonsUploadUrl(t);
+  const rowId = `upload-${inatId}-${Date.now()}`;
+  const domainId = `domstatus-${inatId}-${Date.now()}`;
+  const host = new URL(t.obsPhoto.originalUrl).hostname;
+  const box = document.createElement('tr');
+  box.className = 'bhl-row upload-row';
+  box.innerHTML = `<td></td><td colspan="11">
+    Commons upload for <em>${t.name}</em> (${t.obsPhoto.licenseCode.toUpperCase()}, by ${t.obsPhoto.observerLogin} on iNaturalist)
+    — source host <code>${host}</code> <span id="${domainId}">· checking Commons' upload allow-list…</span>
+    <div class="stub-toolbar">
+      <a class="small-btn upload-btn" href="${uploadUrl}" target="_blank" rel="noopener">Upload to Wikimedia Commons ↗</a>
+      <span class="pill">Suggested filename: ${filename}</span>
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy file-page wikitext</button>
+    </div>
+    <p class="stub-toolbar-hint">
+      Opens a pre-filled Commons upload form (same "upload by URL" mechanism as
+      <a href="https://andrawaag.github.io/tarsier/" target="_blank" rel="noopener">Tarsier</a>) — Commons fetches the
+      photo itself, nothing is transferred through this page. Requires a Wikimedia account; you review and click
+      "Upload file" yourself on Commons.
+    </p>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
+  </td>`;
+  row.after(box);
+
+  isCommonsUploadDomainAllowed(host).then(allowed => {
+    const el = document.getElementById(domainId);
+    if (!el) return;
+    el.innerHTML = allowed
+      ? '· <span class="pill-ok">✓ on Commons\' upload allow-list</span>'
+      : '· <span class="pill-warn">⚠ not on Commons\' upload allow-list</span> — upload-by-URL will be rejected; use "Copy file-page wikitext" with Commons\' Upload Wizard instead.';
+  }).catch(() => {
+    const el = document.getElementById(domainId);
+    if (el) el.textContent = '· could not check the allow-list right now';
+  });
 });
 
 tbody.addEventListener('click', (e) => {
@@ -715,6 +937,9 @@ async function run() {
 
     setStatusHeader(`Checking Plazi TreatmentBank (via Comunica → QLever)…`);
     await resolvePlazi(taxa);
+
+    setStatusHeader(`Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`);
+    await resolveCommonsStatus(taxa);
 
     currentTaxa = taxa;
     setStatusHeader(`Done — ${taxa.length} taxa loaded.`);
