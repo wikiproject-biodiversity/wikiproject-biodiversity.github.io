@@ -51,6 +51,7 @@
       <tr>
         <th></th>
         <th>Taxon</th>
+        <th>Image</th>
         <th>iNaturalist</th>
         <th>Wikidata</th>
         <th>GBIF</th>
@@ -106,6 +107,27 @@
           <code>SERVICE</code> to QLever for the Wikidata item and identifiers, and a nested
           <code>SERVICE</code> to WDQS for the Wikipedia sitelink — three data sources, one query,
           no data ever copied between them. Coverage in this graph is experimental and partial.
+        </li>
+        <li>
+          <strong>Comunica → Wikimedia Commons (QLever)</strong> — for every taxon whose
+          project-observation photo carries a Commons-compatible license
+          (<code>CC0</code> / <code>CC BY</code> / <code>CC BY-SA</code> — not the NC or ND
+          variants, which Commons doesn't accept), a batched query checks whether that exact
+          iNaturalist photo has already been uploaded: Commons structured-data files sourced from
+          iNaturalist carry a "source of file" (<code>P7482</code>) statement whose "described at
+          URL" (<code>P973</code>) qualifier is the photo's <code>inaturalist.org/photos/&lt;id&gt;</code>
+          page — that's the join key. Already-uploaded files are linked directly (and their
+          filename is used to fill the stub draft's infobox image); new ones get a "prepare
+          upload" panel.
+        </li>
+        <li>
+          <strong>Upload to Commons (on demand)</strong> — for a compatible, not-yet-uploaded photo,
+          opens a pre-filled <code>Special:Upload</code> form using the same upload-by-URL mechanism
+          as <a href="https://andrawaag.github.io/tarsier/" target="_blank" rel="noopener">Tarsier</a>:
+          no OAuth, no file passing through this page — Commons fetches the photo itself, from a
+          source host on Commons' own live domain allow-list (checked in real time; iNaturalist's
+          photo host is on it). You still need a Wikimedia account and click "Upload file" yourself
+          on Commons to actually publish it.
         </li>
         <li>
           <strong>Draft a stub (on demand)</strong> — click any red ✗ in the en/ja/es columns to draft
