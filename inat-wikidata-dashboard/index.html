@@ -146,7 +146,10 @@
           <a href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">QuickStatements</a>
           batch that would <code>CREATE</code> one, sourced entirely from the linked databases this
           page already talks to: taxonomic rank from iNaturalist, a backbone taxon id from a live
-          GBIF name match, and a taxonomy id from a live NCBI Taxonomy name match. The parent
+          GBIF name match, and a taxonomy id from a live NCBI Taxonomy name match — plus a label in
+          both <code>en</code> and <code>mul</code> (taxon names don't vary by language; an item
+          with only one language label trips Wikidata's "label in language" constraint, caught by
+          actually running a batch and checking the result). The parent
           taxon's own Wikidata item is resolved <em>independently</em> against each lineage —
           iNaturalist's ancestor name, GBIF's own parent id (genus/family/order/… key, matched to
           the taxon's own rank) joined against <code>P846</code>, and NCBI's taxid for that same
