@@ -145,16 +145,18 @@
           all, click "propose QuickStatements" next to "not found" to draft a
           <a href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">QuickStatements</a>
           batch that would <code>CREATE</code> one, sourced entirely from the linked databases this
-          page already talks to: taxonomic rank and parent taxon from iNaturalist's ancestor chain,
-          a backbone taxon id from a live GBIF name match, and a taxonomy id from a live NCBI
-          Taxonomy name match. The parent taxon's own Wikidata item, if it has one, is resolved
-          three ways in order of reliability: first by joining GBIF's own parent id (genus/family/
-          order/… key, matched to that ancestor's rank) against Wikidata's <code>P846</code>, then
-          the same join against NCBI's taxid via <code>P685</code>, and only as a last resort by
-          matching the parent's name as a plain string. Every derived claim carries a
-          <code>stated in</code> reference back to whichever of iNaturalist, GBIF or NCBI it came
-          from. This drafts an edit — it never runs one; review it and paste it into QuickStatements
-          yourself.
+          page already talks to: taxonomic rank from iNaturalist, a backbone taxon id from a live
+          GBIF name match, and a taxonomy id from a live NCBI Taxonomy name match. The parent
+          taxon's own Wikidata item is resolved <em>independently</em> against each lineage —
+          iNaturalist's ancestor name, GBIF's own parent id (genus/family/order/… key, matched to
+          the taxon's own rank) joined against <code>P846</code>, and NCBI's taxid for that same
+          ancestor joined against <code>P685</code> — rather than trusting whichever answers first.
+          When the lineages agree, every one of them that confirmed it becomes its own reference on
+          the single <code>P171</code> statement; when they land on different Wikidata items, that
+          divergence is surfaced in the panel instead of silently picked one way — a genuine
+          disagreement between databases is exactly the kind of thing worth a human's attention, not
+          a bug to paper over. This drafts an edit — it never runs one; review it and paste it into
+          QuickStatements yourself.
         </li>
         <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
