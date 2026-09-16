@@ -86,13 +86,17 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
      and `P685` (NCBI Taxonomy id, from a live `esearch` lookup scoped to `[scientific name]` so an
      ambiguous common name never silently matches the wrong lineage) — each only added when that
      database actually returned a confident match.
-   - `P171` parent taxon, if the immediate parent (from iNaturalist's ancestor chain) already has
-     its own Wikidata item. Resolved three ways, in order of reliability, by `resolveParentTaxon()`:
-     first joining GBIF's own id for that ancestor rank (`genusKey`/`familyKey`/… picked by the
-     *child* taxon's rank, not the parent's — get this backwards and you silently resolve to the
-     wrong ancestor, e.g. the family instead of the genus) against Wikidata's `P846`; then the same
-     join against NCBI's taxid via `P685`; only as a last resort, matching the parent's name as a
-     plain `P225` string.
+   - `P171` parent taxon, if the immediate parent (from iNaturalist's ancestor chain) has a Wikidata
+     item. `resolveParentCandidates()` checks each lineage *independently* rather than trusting
+     whichever answers first: GBIF's own id for that ancestor rank (`genusKey`/`familyKey`/… picked
+     by the *child* taxon's rank, not the parent's — get this backwards and you silently resolve to
+     the wrong ancestor, e.g. the family instead of the genus) joined against Wikidata's `P846`;
+     the parent's name joined against `P225`; and NCBI's taxid for that same name joined against
+     `P685`. When every lineage that resolved a parent lands on the *same* Wikidata item, one `P171`
+     line is written per agreeing source — each its own reference on the same statement value, so
+     the agreement itself is recorded, not just one source's say-so. When they land on *different*
+     items, `P171` is omitted and the panel names the discrepancy instead of guessing which database
+     is right (a genuine cross-database disagreement, not something this tool should paper over).
    - Every derived claim carries a `stated in` (`P248`) reference back to whichever source actually
      supplied it — iNaturalist (Q16958215), GBIF (Q1531570) or NCBI (Q82494) — the same referencing
      convention used by
