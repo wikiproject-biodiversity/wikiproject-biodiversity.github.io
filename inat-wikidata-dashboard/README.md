@@ -81,7 +81,10 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
    null`), click "propose QuickStatements" to draft a
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
    - `P31` taxon, `P105` rank (resolved live from Wikidata's own taxonomic-rank items rather than
-     a hardcoded table — see `getTaxonomicRankQids()`), `P225`/label/alias = the scientific name.
+     a hardcoded table — see `getTaxonomicRankQids()`), `P225` = the scientific name, plus a label
+     in **both** `en` and `mul` (language-independent — taxon names don't vary by language, and an
+     item with only one language label trips Wikidata's "label in language constraint"; `en`+`mul`
+     is the same pattern this org's own `treatmentbot` uses on the taxa it creates).
    - `P3151` (iNaturalist taxon id), `P846` (GBIF backbone id, from a live `species/match` lookup)
      and `P685` (NCBI Taxonomy id, from a live `esearch` lookup scoped to `[scientific name]` so an
      ambiguous common name never silently matches the wrong lineage) — each only added when that
@@ -92,11 +95,15 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
      by the *child* taxon's rank, not the parent's — get this backwards and you silently resolve to
      the wrong ancestor, e.g. the family instead of the genus) joined against Wikidata's `P846`;
      the parent's name joined against `P225`; and NCBI's taxid for that same name joined against
-     `P685`. When every lineage that resolved a parent lands on the *same* Wikidata item, one `P171`
-     line is written per agreeing source — each its own reference on the same statement value, so
-     the agreement itself is recorded, not just one source's say-so. When they land on *different*
-     items, `P171` is omitted and the panel names the discrepancy instead of guessing which database
-     is right (a genuine cross-database disagreement, not something this tool should paper over).
+     `P685`. When every lineage that resolved a parent lands on the *same* Wikidata item, **one**
+     `P171` line is written, with every agreeing source as its own separate reference block —
+     QuickStatements v1 needs the first reference's source prefixed `S248` and every one after it
+     `!S248` (not `S248` again) to start a genuinely new block instead of merging into snaks of the
+     first one; repeating the whole `LAST P171 …` line per source, which is what this did at first,
+     instead creates duplicate statements (found by actually running a batch — see commit history).
+     When lineages land on *different* items, `P171` is omitted and the panel names the discrepancy
+     instead of guessing which database is right (a genuine cross-database disagreement, not
+     something this tool should paper over).
    - Every derived claim carries a `stated in` (`P248`) reference back to whichever source actually
      supplied it — iNaturalist (Q16958215), GBIF (Q1531570) or NCBI (Q82494) — the same referencing
      convention used by
