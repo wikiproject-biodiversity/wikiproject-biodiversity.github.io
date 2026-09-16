@@ -141,6 +141,17 @@
           publishing.
         </li>
         <li>
+          <strong>Propose QuickStatements (on demand)</strong> — for a taxon with no Wikidata item at
+          all, click "propose QuickStatements" next to "not found" to draft a
+          <a href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">QuickStatements</a>
+          batch that would <code>CREATE</code> one, sourced entirely from the linked databases this
+          page already talks to: taxonomic rank and parent taxon from iNaturalist's ancestor chain
+          (with the parent's own Wikidata item resolved live, via Comunica, if it has one), and a
+          backbone taxon id from a live GBIF name match. Every derived claim carries a
+          <code>stated in</code> reference back to iNaturalist or GBIF. This drafts an edit — it
+          never runs one; review it and paste it into QuickStatements yourself.
+        </li>
+        <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
           richer Wikimedia Commons media panel are the next sources to wire into this dashboard.
         </li>
