@@ -77,6 +77,25 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
    sentence, a reference and `{{Taxonbar}}`. These are **drafts only** — nothing is
    ever posted to Wikipedia automatically; always review formatting, categories and
    notability before publishing.
+9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
+   null`), click "propose QuickStatements" to draft a
+   [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
+   - `P31` taxon, `P105` rank (resolved live from Wikidata's own taxonomic-rank items rather than
+     a hardcoded table — see `getTaxonomicRankQids()`), `P225`/label/alias = the scientific name.
+   - `P171` parent taxon, if the immediate parent (from iNaturalist's ancestor chain) already has
+     its own Wikidata item — resolved with one more Comunica query, same pattern as everywhere
+     else in this tool.
+   - `P3151` (iNaturalist taxon id) and `P846` (GBIF backbone id, from a live
+     `species/match` lookup since there's no existing Wikidata item to have carried it).
+   - Every derived claim (`P171`, `P3151`, `P846`) carries a `stated in` (`P248`) reference back
+     to iNaturalist (Q16958215) or GBIF (Q1531570) — the same referencing convention used by
+     [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker)'s
+     `taxon.py`.
+
+   This drafts an edit; it never runs one. Paste the copied commands into QuickStatements
+   yourself after reviewing them — in particular, QuickStatements' own duplicate-item warnings
+   are the real safety net here, since this dashboard's own "not found" check is only an exact
+   `P225` string match (see the synonym/splits caveat above).
 
 Query timings for the current run are logged live under the project input.
 
