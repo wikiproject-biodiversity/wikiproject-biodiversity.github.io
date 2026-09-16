@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iNaturalist × Wikidata Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="header-row">
+    <img class="logo" src="logo.png" alt="Biohackathon 2026 logo">
+    <div>
+      <h1>iNaturalist ↔ Wikipedia / Wikidata / GBIF / BHL</h1>
+      <p class="subtitle">
+        Finds which taxa observed in an iNaturalist project are still missing a Wikipedia article —
+        inspired by <a href="https://github.com/wikiproject-biodiversity/iNotListed" target="_blank" rel="noopener">iNotListed</a>,
+        powered client-side by <a href="https://comunica.dev/" target="_blank" rel="noopener">Comunica</a> federating
+        live SPARQL endpoints. No backend, no build step — open this file and it runs.
+      </p>
+    </div>
+  </div>
+</header>
+
+<section class="controls">
+  <label>
+    iNaturalist project slug or numeric ID
+    <input id="projectInput" type="text" value="biohackathon-2026" spellcheck="false">
+  </label>
+  <button id="runBtn">Load observations →</button>
+  <div id="status" class="status" aria-live="polite"></div>
+</section>
+
+<section id="stats" class="stats" hidden>
+  <div class="stat"><span id="statTotal">0</span><label>taxa observed</label></div>
+  <div class="stat"><span id="statResolved">0</span><label>matched in Wikidata</label></div>
+  <div class="stat warn"><span id="statMissingAny">0</span><label>missing ≥1 Wikipedia</label></div>
+  <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es</label></div>
+</section>
+
+<section id="filters" class="filters" hidden>
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="missing-any">Missing ≥1 Wikipedia</button>
+  <button class="filter-btn" data-filter="missing-all">Missing all 3</button>
+  <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
+</section>
+
+<section id="tableWrap" class="table-wrap" hidden>
+  <table id="taxaTable">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Taxon</th>
+        <th>iNaturalist</th>
+        <th>Wikidata</th>
+        <th>GBIF</th>
+        <th>Commons</th>
+        <th>en</th>
+        <th>ja</th>
+        <th>es</th>
+        <th>Plazi</th>
+        <th>BHL</th>
+      </tr>
+    </thead>
+    <tbody id="taxaBody"></tbody>
+  </table>
+</section>
+
+<section class="about">
+  <details>
+    <summary>How this works — the semantic web plumbing</summary>
+    <div class="about-body">
+      <ol>
+        <li>
+          <strong>iNaturalist REST API</strong> — fetches every observation in the project and
+          collects the distinct taxa (scientific name, common name, photo, iNaturalist taxon ID).
+        </li>
+        <li>
+          <strong>Comunica → QLever's Wikidata mirror</strong> — a fast SPARQL query resolves each
+          scientific name to its Wikidata item (<code>wdt:P225</code>), and pulls cross-reference
+          identifiers already stored on that item: GBIF (<code>P846</code>), iNaturalist taxon
+          (<code>P3151</code>), Wikimedia Commons category (<code>P373</code>). This is the same
+          reconciliation step as iNotListed, just run live in your browser instead of a Python CLI.
+        </li>
+        <li>
+          <strong>Comunica → Wikidata Query Service</strong> — a second query checks, for every
+          resolved item, whether an English, Japanese or Spanish Wikipedia <code>sitelink</code>
+          exists (<code>schema:about</code> / <code>schema:isPartOf</code>). Anything missing is
+          flagged — that's the "not listed" signal.
+        </li>
+        <li>
+          <strong>Comunica → Plazi TreatmentBank (QLever)</strong> — a third query checks
+          <a href="https://synospecies.plazi.org" target="_blank" rel="noopener">SynoSpecies</a>'s
+          own QLever mirror of Plazi's taxonomic treatments (<code>qlever.ld.plazi.org/sparql</code>)
+          for how many published treatments exist for each species (<code>dwc:genus</code> +
+          <code>dwc:species</code>, joined to <code>treatment:augmentsTaxonConcept</code> /
+          <code>definesTaxonConcept</code>). Plazi's coverage is the opposite shape of BHL's here —
+          narrow (only taxa with a digitized taxonomic revision or original description) but,
+          when present, precise: exact treatment title, DOI and author.
+        </li>
+        <li>
+          <strong>BHL literature (on demand)</strong> — clicking "look up" on a row queries a
+          personal experimental Biodiversity Heritage Library knowledge graph
+          (<code>koetai.semscape.org</code>) with a <em>federated</em> SPARQL query: it starts in
+          a named graph of BHL page metadata (Darwin Core terms), then reaches out via
+          <code>SERVICE</code> to QLever for the Wikidata item and identifiers, and a nested
+          <code>SERVICE</code> to WDQS for the Wikipedia sitelink — three data sources, one query,
+          no data ever copied between them. Coverage in this graph is experimental and partial.
+        </li>
+        <li>
+          <strong>Draft a stub (on demand)</strong> — click any red ✗ in the en/ja/es columns to draft
+          a starting-point Wikipedia article for that language, in the spirit of
+          <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>:
+          it fetches the taxon's ancestor chain from iNaturalist and its authorship/publication from
+          GBIF, then fills in the language's species infobox (<code>{{Speciesbox}}</code> on English
+          Wikipedia, <code>{{Ficha de taxón}}</code> on Spanish, <code>{{生物分類表}}</code> on
+          Japanese) plus a lead sentence, reference and <code>{{Taxonbar}}</code>. These are drafts
+          only — nothing is ever posted automatically; review formatting and notability before
+          publishing.
+        </li>
+        <li>
+          <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
+          richer Wikimedia Commons media panel are the next sources to wire into this dashboard.
+        </li>
+      </ol>
+      <p class="query-toggle-hint">Query timings for the current run are logged below the status line while it runs.</p>
+    </div>
+  </details>
+</section>
+
+<footer>
+  <p>
+    Standalone static page — no server, no tracking. Source data ©
+    <a href="https://www.inaturalist.org" target="_blank" rel="noopener">iNaturalist</a> contributors,
+    <a href="https://www.wikidata.org" target="_blank" rel="noopener">Wikidata</a> contributors, and
+    <a href="https://www.biodiversitylibrary.org" target="_blank" rel="noopener">BHL</a>.
+  </p>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
