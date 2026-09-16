@@ -702,29 +702,37 @@ SELECT ?rank (COUNT(?item) AS ?n) WHERE {
   return rankQidsPromise;
 }
 
-// Does the immediate parent taxon already have a Wikidata item? (Often yes even when
-// the taxon itself doesn't — Wikidata's taxonomic backbone runs deep.) Tries the two
-// stable-id joins first (GBIF, then NCBI) and only falls back to matching the parent's
-// name as a plain P225 string — the least reliable of the three — if neither has data.
-async function resolveParentTaxon(taxonRank, parent, gbifMatch) {
+// Does the immediate parent taxon already have a Wikidata item? Checked independently
+// against each lineage this dashboard has data for — iNaturalist's ancestor name, GBIF's
+// own parent id (genus/family/order/… key, picked by the *child* taxon's rank, not the
+// parent's — get this backwards and you silently resolve to the wrong ancestor), and
+// NCBI's taxid for that same ancestor name — rather than trusting the first one that
+// answers. When independent sources agree on the same Wikidata item, that agreement
+// itself is worth recording (every source that confirmed it becomes its own reference
+// on the one P171 statement); when they land on *different* items, that's a genuine
+// taxonomic discrepancy between databases worth surfacing, not silently picking a winner.
+async function resolveParentCandidates(taxonRank, parent, gbifMatch) {
+  const candidates = []; // { qid, source: 'iNaturalist'|'GBIF'|'NCBI', refQid }
+
   const gbifKeyField = GBIF_PARENT_KEY_FIELD[(taxonRank || '').toLowerCase()];
   const parentGbifId = gbifMatch && gbifKeyField ? gbifMatch[gbifKeyField] : null;
   if (parentGbifId) {
     const qid = await resolveWikidataByExternalId('P846', parentGbifId).catch(() => null);
-    if (qid) return { qid, via: 'gbif', refQid: QS_REF_GBIF };
+    if (qid) candidates.push({ qid, source: 'GBIF', refQid: QS_REF_GBIF });
   }
-  if (parent) {
-    const parentNcbiId = await fetchNcbiTaxonId(parent.name).catch(() => null);
-    if (parentNcbiId) {
-      const qid = await resolveWikidataByExternalId('P685', parentNcbiId).catch(() => null);
-      if (qid) return { qid, via: 'ncbi', refQid: QS_REF_NCBI };
-    }
-  }
+
   if (parent) {
     const qid = await resolveWikidataByExternalId('P225', parent.name).catch(() => null);
-    if (qid) return { qid, via: 'name', refQid: QS_REF_INATURALIST };
+    if (qid) candidates.push({ qid, source: 'iNaturalist', refQid: QS_REF_INATURALIST });
+
+    const parentNcbiId = await fetchNcbiTaxonId(parent.name).catch(() => null);
+    if (parentNcbiId) {
+      const ncbiQid = await resolveWikidataByExternalId('P685', parentNcbiId).catch(() => null);
+      if (ncbiQid) candidates.push({ qid: ncbiQid, source: 'NCBI', refQid: QS_REF_NCBI });
+    }
   }
-  return null;
+
+  return candidates;
 }
 
 async function ensureQuickStatementsContext(t) {
@@ -738,8 +746,12 @@ async function ensureQuickStatementsContext(t) {
     fetchNcbiTaxonId(t.name).catch(() => null),
     getTaxonomicRankQids().catch(() => new Map()),
   ]);
-  const resolvedParent = await resolveParentTaxon(t.rank, parent, gbifMatch).catch(() => null);
-  t._qsContext = { detail, parent, gbifMatch, ncbiTaxonId, resolvedParent, rankQids };
+  const parentCandidates = await resolveParentCandidates(t.rank, parent, gbifMatch).catch(() => []);
+  const parentByQid = new Map(); // qid -> [candidate, ...] agreeing on it
+  for (const c of parentCandidates) {
+    (parentByQid.get(c.qid) || parentByQid.set(c.qid, []).get(c.qid)).push(c);
+  }
+  t._qsContext = { detail, parent, gbifMatch, ncbiTaxonId, parentCandidates, parentByQid, rankQids };
   return t._qsContext;
 }
 
@@ -758,8 +770,14 @@ async function buildQuickStatements(t) {
   lines.push(`LAST\tLen\t${qsString(t.name)}`);
   lines.push(`LAST\tAen\t${qsString(t.name)}`);
   lines.push(`LAST\tDen\t${qsString(description)}`);
-  if (ctx.resolvedParent) {
-    lines.push(`LAST\tP171\t${ctx.resolvedParent.qid}\tS248\t${ctx.resolvedParent.refQid}`);
+  // Only write P171 when every lineage that resolved a parent agrees on the same item —
+  // one line per agreeing source, each its own reference on the same statement value.
+  // Divergent lineages are surfaced in the panel text instead of guessed at here.
+  if (ctx.parentByQid.size === 1) {
+    const [qid, sources] = [...ctx.parentByQid.entries()][0];
+    for (const c of sources) {
+      lines.push(`LAST\tP171\t${qid}\tS248\t${c.refQid}`);
+    }
   }
   lines.push(`LAST\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`);
   if (ctx.gbifMatch && ctx.gbifMatch.usageKey && ctx.gbifMatch.matchType && ctx.gbifMatch.matchType !== 'NONE') {
@@ -769,6 +787,28 @@ async function buildQuickStatements(t) {
     lines.push(`LAST\tP685\t${qsString(String(ctx.ncbiTaxonId))}\tS248\t${QS_REF_NCBI}`);
   }
   return lines.join('\n');
+}
+
+// Human-readable summary of how (or whether) the parent taxon resolved, for the detail
+// panel: agreement across lineages is worth showing off, divergence is worth flagging
+// rather than silently resolved one way, per source.
+function describeParentResolution(ctx) {
+  if (!ctx.parent) return '';
+  if (ctx.parentByQid.size === 0) {
+    return `Parent taxon <em>${ctx.parent.name}</em> has no Wikidata item in any lineage checked — P171 omitted.`;
+  }
+  if (ctx.parentByQid.size === 1) {
+    const [qid, sources] = [...ctx.parentByQid.entries()][0];
+    const names = sources.map(c => c.source).join(' and ');
+    return `Parent taxon <em>${ctx.parent.name}</em> resolved to ` +
+      `<a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — ` +
+      `${names} agree${sources.length > 1 ? `, all ${sources.length} cited as references on that claim` : ''}.`;
+  }
+  const perSource = [...ctx.parentByQid.entries()].map(([qid, sources]) =>
+    `${sources.map(c => c.source).join('/')} → <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>`
+  ).join(', ');
+  return `⚠ Parent taxon lineages disagree for <em>${ctx.parent.name}</em>: ${perSource}. ` +
+    `Not added automatically (P171 omitted) — this is a real discrepancy between databases, not a bug; resolve it manually.`;
 }
 
 // ---------- UI ----------
@@ -1089,9 +1129,7 @@ tbody.addEventListener('click', async (e) => {
       Proposed QuickStatements to create a Wikidata item for <em>${t.name}</em> — assembled from
       iNaturalist (rank, ancestor chain, taxon id), GBIF (backbone taxon id${ctx.gbifMatch && ctx.gbifMatch.usageKey ? `: ${ctx.gbifMatch.usageKey}, ${ctx.gbifMatch.matchType} match` : ': no confident match found'})
       and NCBI Taxonomy (taxid${ctx.ncbiTaxonId ? `: ${ctx.ncbiTaxonId}` : ': no unambiguous match found'}).
-      ${ctx.resolvedParent
-        ? `Parent taxon <em>${ctx.parent.name}</em> resolved to <a href="https://www.wikidata.org/wiki/${ctx.resolvedParent.qid}" target="_blank" rel="noopener">${ctx.resolvedParent.qid}</a> (matched via ${ctx.resolvedParent.via === 'gbif' ? 'its GBIF id' : ctx.resolvedParent.via === 'ncbi' ? 'its NCBI taxid' : 'its name'}).`
-        : ctx.parent ? `Parent taxon <em>${ctx.parent.name}</em> has no Wikidata item either — P171 omitted.` : ''}
+      ${describeParentResolution(ctx)}
       Review carefully before running — this is a draft, not checked for existing near-duplicates beyond the exact name match already shown in this row.
       <div class="stub-toolbar">
         <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
