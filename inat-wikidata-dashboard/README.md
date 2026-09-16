@@ -52,7 +52,23 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
    one query, nothing copied between them. That endpoint currently only has a handful
    of taxa loaded, so most lookups will correctly report no results — that's the
    knowledge graph's coverage, not a bug.
-6. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es columns.
+6. **Comunica → Wikimedia Commons (QLever)** — for taxa whose project-observation photo has a
+   Commons-compatible license (`CC0`/`CC BY`/`CC BY-SA` — not the NC or ND variants), a batched
+   query checks whether that exact iNaturalist photo is already on Commons: files sourced from
+   iNaturalist carry a `P7482` ("source of file") statement whose `P973` ("described at URL")
+   qualifier is the `inaturalist.org/photos/<id>` page, which is the join key. Already-uploaded
+   files are linked directly and their filename fills the stub draft's infobox image.
+7. **Upload to Commons (on demand)** — for a compatible, not-yet-uploaded photo, opens a
+   pre-filled `Special:Upload` form using upload-by-URL: `wpUploadFileURL` set to the iNaturalist
+   photo, `wpLicense`/`wpDestFile`/`wpUploadDescription` pre-filled from the same data as the
+   wikitext preview. This is the same mechanism (no OAuth, no backend) as
+   [Tarsier](https://andrawaag.github.io/tarsier/), another WikiProject Biodiversity tool — it
+   works because Commons fetches the file itself from a source host on its own live
+   `MediaWiki:Copyupload-allowed-domains` allow-list, which this tool checks in real time before
+   showing the button. iNaturalist's photo host (`inaturalist-open-data.s3.amazonaws.com`) is on
+   that list today. You still need your own Wikimedia account and click "Upload file" on Commons
+   yourself — nothing is uploaded automatically by this page.
+8. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es columns.
    In the spirit of
    [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker),
    it fetches the taxon's ancestor chain from iNaturalist and authorship/publication
@@ -77,8 +93,13 @@ Query timings for the current run are logged live under the project input.
 - No OpenStreetMap integration yet. The eventual idea is to align observation
   localities with OSM places, but that's a per-observation, not per-taxon, alignment
   and needs its own query pattern.
-- Wikimedia Commons is currently just a category link (`P373`); a media-preview panel
-  (via the Commons SPARQL endpoint or the MediaWiki API) is a natural next step.
+- The Commons duplicate-check only looks at the **first photo of the first observation**
+  per taxon, and only its license — it doesn't consider every photo across every
+  observation of that taxon in the project.
+- The upload-by-URL button only actually works while the photo's source host stays on
+  Commons' allow-list, and only for the license types in `COMMONS_COMPATIBLE_LICENSES`
+  (`app.js`) — if Commons ever removes iNaturalist's S3 host from the list, the button will
+  correctly show "⚠ not on Commons' upload allow-list" rather than silently failing.
 - One SPARQL batch per 40 taxa; fine for hackathon-scale projects, untested at
   iNaturalist's largest project sizes (BATCH_SIZE in `app.js` is the place to tune
   this, alongside the `MAX_OBSERVATIONS` safety cap).
