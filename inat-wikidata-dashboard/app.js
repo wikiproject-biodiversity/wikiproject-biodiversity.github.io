@@ -41,7 +41,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // Run a SPARQL SELECT via Comunica against a well-behaved SPARQL endpoint
 // (one that returns proper application/sparql-results+json), with retry/backoff.
-async function sparqlViaComunica(query, endpoint, { retries = 3, label = '' } = {}) {
+async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', silent = false } = {}) {
   const engine = await getEngine();
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -57,15 +57,33 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '' } = 
         for (const [k, v] of b) o[k.value] = v.value;
         return o;
       });
-      log(`${label || endpoint} — ${out.length} rows in ${Math.round(performance.now() - t0)}ms`);
+      if (!silent) log(`${label || endpoint} — ${out.length} rows in ${Math.round(performance.now() - t0)}ms`);
       return out;
     } catch (e) {
       lastErr = e;
+      // Always logged, even when silent: a failed/retried batch is exactly the kind of
+      // thing the aggregate summary line (logged by the caller) would otherwise hide.
       log(`${label || endpoint} — attempt ${attempt + 1} failed: ${e.message}`, true);
       if (attempt < retries) await sleep(800 * (attempt + 1));
     }
   }
   throw lastErr;
+}
+
+// Runs `fn` once per chunk of `items` (each call gets that chunk's array), keeping every
+// per-batch SPARQL log line silent, then logs ONE aggregate line for the whole step —
+// large projects can mean dozens of batches per step, and a line each turns the log into
+// an unscrollable wall of near-identical text. `fn` returns the row count for its batch.
+async function runBatchedStep(items, label, fn) {
+  const batches = chunk(items, BATCH_SIZE);
+  const t0 = performance.now();
+  let totalRows = 0;
+  for (const batch of batches) {
+    totalRows += await fn(batch);
+  }
+  const n = batches.length;
+  log(`${label} — ${n} batch${n === 1 ? '' : 'es'}, ${items.length} item${items.length === 1 ? '' : 's'}, ${totalRows} row${totalRows === 1 ? '' : 's'}, ${Math.round(performance.now() - t0)}ms`);
+  return totalRows;
 }
 
 // Plain SPARQL-over-HTTP fetch, for endpoints whose Content-Type header
@@ -168,7 +186,7 @@ async function fetchProjectTaxa(projectSlug, onProgress) {
 
 async function resolveWikidata(taxa) {
   const byName = new Map();
-  for (const batch of chunk(taxa, BATCH_SIZE)) {
+  await runBatchedStep(taxa, 'Wikidata lookup', async (batch) => {
     const values = batch.map(t => sparqlStringLiteral(t.name)).join(' ');
     const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
@@ -178,7 +196,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
   OPTIONAL { ?wdTaxon wdt:P3151 ?inat }
   OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
 }`;
-    const rows = await sparqlViaComunica(query, QLEVER_ENDPOINT, { label: `Wikidata lookup (batch of ${batch.length})` });
+    const rows = await sparqlViaComunica(query, QLEVER_ENDPOINT, { silent: true });
     for (const r of rows) {
       const list = byName.get(r.taxonLabel) || [];
       list.push({
@@ -190,7 +208,8 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
       });
       byName.set(r.taxonLabel, list);
     }
-  }
+    return rows.length;
+  });
 
   for (const t of taxa) {
     const candidates = byName.get(t.name) || [];
@@ -219,7 +238,7 @@ async function resolveSitelinks(taxa) {
   const selectVars = LANGS.map(l => `?article_${l.code}`).join(' ');
 
   const byQid = new Map();
-  for (const batch of chunk(withWd, BATCH_SIZE)) {
+  await runBatchedStep(withWd, 'Wikipedia sitelinks', async (batch) => {
     const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
     const query = `PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX schema: <http://schema.org/>
@@ -227,14 +246,15 @@ SELECT ?wdTaxon ${selectVars} WHERE {
   VALUES ?wdTaxon { ${values} }
   ${optionals}
 }`;
-    const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { label: `Wikipedia sitelinks (batch of ${batch.length})` });
+    const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
     for (const r of rows) {
       const qid = r.wdTaxon.split('/').pop();
       const langs = {};
       for (const l of LANGS) langs[l.code] = r[`article_${l.code}`] || null;
       byQid.set(qid, langs);
     }
-  }
+    return rows.length;
+  });
 
   for (const t of withWd) {
     t.wikipedia = byQid.get(t.wikidata.qid) || Object.fromEntries(LANGS.map(l => [l.code, null]));
@@ -253,7 +273,7 @@ async function resolvePlazi(taxa) {
     .filter(x => x.split);
 
   const counts = new Map(); // "Genus|species" -> count
-  for (const batch of chunk(binomial, BATCH_SIZE)) {
+  await runBatchedStep(binomial, 'Plazi treatments', async (batch) => {
     const values = batch.map(x => `(${sparqlStringLiteral(x.split.genus)} ${sparqlStringLiteral(x.split.species)})`).join(' ');
     const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
 PREFIX treatment: <http://plazi.org/vocab/treatment#>
@@ -263,9 +283,10 @@ SELECT ?genus ?species (COUNT(DISTINCT ?t) AS ?n) WHERE {
   ?t (treatment:augmentsTaxonConcept|treatment:definesTaxonConcept) ?tc .
 }
 GROUP BY ?genus ?species`;
-    const rows = await sparqlViaComunica(query, PLAZI_ENDPOINT, { label: `Plazi treatments (batch of ${batch.length})` });
+    const rows = await sparqlViaComunica(query, PLAZI_ENDPOINT, { silent: true });
     for (const r of rows) counts.set(`${r.genus}|${r.species}`, parseInt(r.n, 10));
-  }
+    return rows.length;
+  });
 
   const binomialSet = new Set(binomial.map(x => x.t));
   for (const t of taxa) {
@@ -308,7 +329,7 @@ async function resolveCommonsStatus(taxa) {
   if (candidates.length === 0) return taxa;
 
   const existing = new Map(); // inatPhotoUrl -> { entity, pageUrl }
-  for (const batch of chunk(candidates, BATCH_SIZE)) {
+  await runBatchedStep(candidates, 'Commons duplicate check', async (batch) => {
     const values = batch.map(t => `<${t.obsPhoto.inatPhotoUrl}>`).join(' ');
     const query = `PREFIX p: <http://www.wikidata.org/prop/>
 PREFIX pq: <http://www.wikidata.org/prop/qualifier/>
@@ -319,13 +340,14 @@ SELECT ?url ?file ?contentUrl WHERE {
         schema:contentUrl ?contentUrl .
   ?stmt pq:P973 ?url .
 }`;
-    const rows = await sparqlViaComunica(query, COMMONS_ENDPOINT, { label: `Commons duplicate check (batch of ${batch.length})` });
+    const rows = await sparqlViaComunica(query, COMMONS_ENDPOINT, { silent: true });
     for (const r of rows) {
       // schema:contentUrl looks like https://upload.wikimedia.org/wikipedia/commons/1/1b/Filename.jpg
       const filename = decodeURIComponent(r.contentUrl.split('/').pop());
       existing.set(r.url, { entity: r.file, pageUrl: `https://commons.wikimedia.org/wiki/File:${filename}` });
     }
-  }
+    return rows.length;
+  });
 
   for (const t of candidates) {
     t.obsPhoto.commonsFile = existing.get(t.obsPhoto.inatPhotoUrl) || null;
