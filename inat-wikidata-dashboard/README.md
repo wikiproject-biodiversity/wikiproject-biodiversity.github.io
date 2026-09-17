@@ -115,7 +115,10 @@ Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
    are the real safety net here, since this dashboard's own "not found" check is only an exact
    `P225` string match (see the synonym/splits caveat above).
 
-Query timings for the current run are logged live under the project input.
+Query timings for the current run are logged live under the project input, in a small
+scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
+rather than one line per batch, so a large project (hundreds of taxa, dozens of batches
+per step) doesn't turn it into an unscrollable wall of near-identical text.
 
 ### Known limitations (v1)
 
