@@ -185,13 +185,25 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   tool's own cumulative load from a long testing session. Worst case, a step logs its
   failure and moves on with whatever QLever alone already found (see the `catch` blocks
   in `resolveWikidata`/`resolveSitelinks`) rather than hanging.
-- One SPARQL batch per 40 taxa; fine for hackathon-scale projects, untested at
-  iNaturalist's largest project sizes (BATCH_SIZE in `app.js` is the place to tune
-  this, alongside the `MAX_OBSERVATIONS` safety cap).
+- One SPARQL batch per 100 taxa (`BATCH_SIZE` in `app.js`; 25 for WDQS specifically,
+  `WDQS_BATCH_SIZE`); fine for hackathon-scale projects and tested against a single
+  user's full observation history (~2,200 distinct taxa), but both remain public
+  services this tool doesn't control — see the rate-limiting note above.
+
+## Acknowledgements
+
+This tool grew out of engagement with the Wikidata
+[WikiProject Biodiversity](https://www.wikidata.org/wiki/Wikidata:WikiProject_Biodiversity)
+and a series of consecutive hackathons — the [DBCLS BioHackathons](https://biohackathon.org/)
+and [SWAT4HCLS](https://www.swat4hcls.org/). See
+["BioHackJP24 report: Running a WikiBlitz"](https://doi.org/10.37044/osf.io/5ue2s_v1) for the
+earlier work this dashboard builds on. The logo is
+[Koetai](https://koetai.semscape.org)'s own Anableps mark.
 
 ## Files
 
 - `index.html` — page structure
 - `style.css` — styling (light/dark aware)
 - `app.js` — all logic: iNaturalist fetch, Comunica queries, BHL/Plazi lookups, stub drafting, rendering
+- `koetai-logo.svg` — header logo, from [koetai.semscape.org](https://koetai.semscape.org)
 - `.claude/launch.json` — dev-server config used while building this in Claude Code
