@@ -92,17 +92,29 @@
           name, photo, iNaturalist taxon ID).
         </li>
         <li>
-          <strong>Comunica → QLever's Wikidata mirror</strong> — a fast SPARQL query resolves each
-          scientific name to its Wikidata item (<code>wdt:P225</code>), and pulls cross-reference
-          identifiers already stored on that item: GBIF (<code>P846</code>), iNaturalist taxon
-          (<code>P3151</code>), Wikimedia Commons category (<code>P373</code>). This is the same
-          reconciliation step as iNotListed, just run live in your browser instead of a Python CLI.
+          <strong>Comunica → QLever's Wikidata mirror, live WDQS as a fallback</strong> — a fast
+          batched query resolves each scientific name to its Wikidata item (<code>wdt:P225</code>)
+          and pulls cross-reference identifiers already stored on it: GBIF (<code>P846</code>),
+          iNaturalist taxon (<code>P3151</code>), Wikimedia Commons category (<code>P373</code>).
+          QLever's copy of Wikidata is a periodic dump import, not a live feed — checked directly,
+          it's currently about six weeks behind (via <code>wikibase:Dump schema:dateModified</code>,
+          QLever's own build-time metadata). That's harmless for a <em>match</em> — an item that
+          existed six weeks ago still exists — but a taxon QLever finds nothing for might just be
+          too recent for the snapshot, not genuinely absent from Wikidata. So only the taxa QLever
+          comes back empty on get a second, live check against the official Wikidata Query Service;
+          everything QLever already answered is trusted as-is. This keeps the fast path fast (QLever
+          alone, no WDQS rate-limiting) while avoiding the false-negative case that actually matters
+          here: mistaking "too new for the mirror" for "not on Wikidata" is exactly what would make
+          the "propose QuickStatements" feature below draft a duplicate.
         </li>
         <li>
-          <strong>Comunica → Wikidata Query Service</strong> — a second query checks, for every
-          resolved item, whether an English, Japanese or Spanish Wikipedia <code>sitelink</code>
-          exists (<code>schema:about</code> / <code>schema:isPartOf</code>). Anything missing is
-          flagged — that's the "not listed" signal.
+          <strong>Same QLever-first, WDQS-fallback pattern for sitelinks</strong> — checks, for
+          every resolved item, whether an English, Japanese or Spanish Wikipedia
+          <code>sitelink</code> exists (<code>schema:about</code> / <code>schema:isPartOf</code>);
+          anything missing is the "not listed" signal this tool is for. Only taxa with at least one
+          missing language get re-verified against live WDQS, since (again) this tool's whole
+          purpose is flagging what's missing, and a stale "missing" would wrongly send someone to
+          write an article that already exists.
         </li>
         <li>
           <strong>Comunica → Plazi TreatmentBank (QLever)</strong> — a third query checks
