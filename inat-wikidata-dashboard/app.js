@@ -974,7 +974,14 @@ function buildProjectIdentityQS(inatProject, mode, targetQid) {
   lines.push(`LAST\tP856\t${qsString(url)}\tS248\t${QS_REF_INATURALIST}`);
   lines.push(`LAST\tLen\t${qsString(inatProject.title)}`);
   lines.push(`LAST\tLmul\t${qsString(inatProject.title)}`);
-  lines.push(`LAST\tDen\t${qsString('citizen science project on iNaturalist')}`);
+  // Deliberately just "iNaturalist project", not e.g. "citizen science project on
+  // iNaturalist" — the label above is the project's own title, which is very often
+  // also the name of a broader event/campaign/organization it's *for* (e.g. a project
+  // called "Biohackathon 2026" tracking observations made during that event). Without
+  // an unambiguous description, this item reads as being about that broader thing
+  // rather than specifically the iNaturalist project — description is what Wikidata
+  // shows in parentheses to disambiguate two items sharing a label.
+  lines.push(`LAST\tDen\t${qsString('iNaturalist project')}`);
   return lines.join('\n');
 }
 
@@ -1460,7 +1467,10 @@ identityPanelEl.addEventListener('click', (e) => {
     showIdentityQsDraft(commands, `Adds the iNaturalist identifier to <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>:`);
   } else {
     const commands = builder(record, 'create', null);
-    showIdentityQsDraft(commands, `Draft to create a new Wikidata item${scopeType === 'user' ? ' — review notability before using this; being an iNaturalist contributor alone is not enough' : ''}:`);
+    const hint = scopeType === 'user'
+      ? ' — review notability before using this; being an iNaturalist contributor alone is not enough'
+      : ' — for the iNaturalist project itself, described as such so it isn\'t confused with any broader event/campaign of the same name';
+    showIdentityQsDraft(commands, `Draft to create a new Wikidata item${hint}:`);
   }
 });
 
