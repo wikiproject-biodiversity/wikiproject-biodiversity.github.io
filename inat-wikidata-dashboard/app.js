@@ -128,17 +128,22 @@ function splitBinomial(name) {
 
 // ---------- iNaturalist ----------
 
-async function fetchProjectTaxa(projectSlug, onProgress) {
+// scopeType: 'project' (iNaturalist project slug/id) or 'user' (iNaturalist login/id) —
+// both accept either a slug/login string or a numeric id interchangeably via the same
+// REST param shape (project_id= / user_id=), so this only needs to pick the param name.
+async function fetchScopedTaxa(scopeType, scopeValue, onProgress) {
+  const param = scopeType === 'user' ? 'user_id' : 'project_id';
+  const noun = scopeType === 'user' ? 'user' : 'project';
   const observations = [];
   let page = 1;
   const perPage = 200;
   while (observations.length < MAX_OBSERVATIONS) {
-    const url = `${INAT_API}/observations?project_id=${encodeURIComponent(projectSlug)}&per_page=${perPage}&page=${page}&order_by=id`;
+    const url = `${INAT_API}/observations?${param}=${encodeURIComponent(scopeValue)}&per_page=${perPage}&page=${page}&order_by=id`;
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${projectSlug}" a valid project slug/id?)`);
+    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : 'slug/id'}?)`);
     const json = await res.json();
     if (page === 1 && json.total_results === 0) {
-      throw new Error(`No observations found for project "${projectSlug}".`);
+      throw new Error(`No observations found for ${noun} "${scopeValue}".`);
     }
     observations.push(...json.results);
     onProgress(observations.length, json.total_results);
@@ -160,7 +165,7 @@ async function fetchProjectTaxa(projectSlug, onProgress) {
         photo: t.default_photo ? t.default_photo.square_url : null,
         inatWikipediaUrl: t.wikipedia_url || null,
         obsCount: 0,
-        obsPhoto: null, // first Commons-relevant photo actually attached to an observation *in this project*
+        obsPhoto: null, // first Commons-relevant photo actually attached to a matching observation
       });
     }
     const entry = byTaxon.get(t.id);
@@ -846,11 +851,23 @@ function describeParentResolution(ctx) {
 
 const statusEl = document.getElementById('status');
 const runBtn = document.getElementById('runBtn');
+const scopeTypeSelect = document.getElementById('scopeType');
 const projectInput = document.getElementById('projectInput');
+const projectInputLabel = document.getElementById('projectInputLabel');
 const statsEl = document.getElementById('stats');
 const filtersEl = document.getElementById('filters');
 const tableWrapEl = document.getElementById('tableWrap');
 const tbody = document.getElementById('taxaBody');
+
+const SCOPE_PLACEHOLDERS = {
+  project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
+  user: { label: 'iNaturalist username or numeric ID', example: 'andrawaag' },
+};
+scopeTypeSelect.addEventListener('change', () => {
+  const cfg = SCOPE_PLACEHOLDERS[scopeTypeSelect.value];
+  projectInputLabel.textContent = cfg.label;
+  projectInput.value = cfg.example;
+});
 
 let currentTaxa = [];
 let currentFilter = 'all';
@@ -1215,8 +1232,10 @@ function updateStats() {
 }
 
 async function run() {
-  const project = projectInput.value.trim();
-  if (!project) return;
+  const scopeType = scopeTypeSelect.value; // 'project' or 'user'
+  const scopeValue = projectInput.value.trim();
+  if (!scopeValue) return;
+  const noun = scopeType === 'user' ? 'user' : 'project';
   runBtn.disabled = true;
   statusEl.innerHTML = '';
   statsEl.hidden = true;
@@ -1225,9 +1244,9 @@ async function run() {
   currentTaxa = [];
 
   try {
-    setStatusHeader(`Fetching observations for "${project}"…`);
-    const taxa = await fetchProjectTaxa(project, (n, total) => {
-      setStatusHeader(`Fetching observations for "${project}"… ${n}/${total || '?'}`);
+    setStatusHeader(`Fetching observations for ${noun} "${scopeValue}"…`);
+    const taxa = await fetchScopedTaxa(scopeType, scopeValue, (n, total) => {
+      setStatusHeader(`Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`);
     });
     log(`${taxa.length} distinct taxa found.`);
 
