@@ -29,15 +29,27 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    the chosen user (`project_id=` / `user_id=`, both accept either a slug/login or a numeric id)
    and collects the distinct taxa (scientific name, common name, photo, observation count).
 2. **Comunica → [QLever](https://qlever.cs.uni-freiburg.de/wikidata)'s Wikidata
-   mirror** — resolves each scientific name to a Wikidata item (`wdt:P225`) and reads
-   off cross-reference identifiers already stored there: GBIF (`P846`), iNaturalist
-   taxon (`P3151`), Wikimedia Commons category (`P373`). QLever is used here instead of
-   the official Wikidata Query Service because it comfortably handles a `VALUES` list
-   of dozens of names in well under a second.
-3. **Comunica → Wikidata Query Service** — a second query checks, for every resolved
-   item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
-   (`schema:about` / `schema:isPartOf`). Anything missing is the "not listed" signal
-   the dashboard highlights.
+   mirror, live WDQS as a fallback** — resolves each scientific name to a Wikidata item
+   (`wdt:P225`) and reads off cross-reference identifiers already stored there: GBIF
+   (`P846`), iNaturalist taxon (`P3151`), Wikimedia Commons category (`P373`). QLever is
+   fast and comfortably handles a `VALUES` list of dozens of names in well under a
+   second — but it's a periodic dump import, not a live feed. Checked directly (via
+   `wikibase:Dump schema:dateModified`, QLever's own build-time metadata), it was about
+   six weeks stale as of 2026-09-19. Fine for a *match* (an item that existed six weeks
+   ago still exists), useless as proof of absence: a taxon QLever finds nothing for
+   might just be too recent for the snapshot. Since a false "not on Wikidata" here would
+   make the QuickStatements feature below draft a duplicate item, only QLever's *misses*
+   get a live re-check against WDQS (`resolveWikidata`'s second pass) — everything it
+   already found is trusted as-is, so the common case stays fast and off WDQS entirely.
+3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
+   resolved item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
+   (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
+   to surface. Only taxa with at least one missing language get re-verified against live
+   WDQS; a stale "missing" would wrongly send someone to write an article that already
+   exists, which is precisely the failure this tool is supposed to prevent. The same
+   "trust a match, re-check a miss" pattern (`sparqlFirstRowWithFallback`) also backs
+   every other single-item Wikidata lookup in the app — the taxon-parent resolution and
+   the project/user identity checks below.
 4. **Comunica → Plazi TreatmentBank (QLever)** — a third batched query checks
    [SynoSpecies](https://synospecies.plazi.org)' own QLever mirror of Plazi's
    taxonomic treatments (`qlever.ld.plazi.org/sparql`) for how many published
