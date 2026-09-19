@@ -1415,6 +1415,10 @@ function renderIdentityPanel() {
 
   const rowId = `identity-qs-${Date.now()}`;
   let candidatesHtml = '';
+  // An ORCID match is trustworthy enough that offering "create a new item" alongside it
+  // would be actively dangerous — it invites a duplicate item for someone who already
+  // has one. So the create button is omitted entirely in that case, not just discouraged.
+  const showCreateBtn = !orcidMatch;
   if (orcidMatch) {
     candidatesHtml = `<ul class="candidates">
       <li>Matched by ORCID: <a href="https://www.wikidata.org/wiki/${orcidMatch.qid}" target="_blank" rel="noopener">${orcidMatch.qid}</a>
@@ -1427,12 +1431,12 @@ function renderIdentityPanel() {
         — ${c.label}${c.description ? ` <em>(${c.description})</em>` : ''}
         <button class="small-btn identity-add-btn" data-qid="${c.qid}">add identifier to this item</button>
       </li>`).join('')}</ul>
-      <p class="identity-note">Name matches only — unlike the taxon-parent lookups elsewhere in this tool, these are not backed by a stable id, so verify each one is really the same ${noun} before using it.</p>`;
+      <p class="identity-note">Name matches only — unlike the taxon-parent lookups elsewhere in this tool, these are not backed by a stable id, so verify each one is really the same ${noun} before using it — and check the list above before proposing a new item, to avoid creating a duplicate.</p>`;
   }
 
   identityPanelEl.innerHTML = `<div class="identity-row">
       ✗ iNaturalist ${noun} <a href="${inatUrl}" target="_blank" rel="noopener">${displayName}</a> is not yet linked on Wikidata.
-      <button class="small-btn identity-create-btn">Propose creating a new item</button>
+      ${showCreateBtn ? '<button class="small-btn identity-create-btn">Propose creating a new item</button>' : ''}
     </div>
     ${candidatesHtml}
     <div id="${rowId}-panel"></div>`;
