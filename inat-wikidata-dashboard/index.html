@@ -42,6 +42,8 @@
   </div>
 </section>
 
+<section id="identityPanel" class="identity-panel" hidden></section>
+
 <section id="stats" class="stats" hidden>
   <div class="stat"><span id="statTotal">0</span><label>taxa observed</label></div>
   <div class="stat"><span id="statResolved">0</span><label>matched in Wikidata</label></div>
@@ -173,6 +175,19 @@
           disagreement between databases is exactly the kind of thing worth a human's attention, not
           a bug to paper over. This drafts an edit — it never runs one; review it and paste it into
           QuickStatements yourself.
+        </li>
+        <li>
+          <strong>Is the project/user itself on Wikidata?</strong> — runs automatically, in parallel
+          with the taxa pipeline, for whatever project or user is entered at the top. A user is
+          checked against <code>P12022</code> (iNaturalist user ID); a project has no dedicated
+          Wikidata property, so it's checked against <code>P856</code>/<code>P973</code> (official
+          website / described at URL) for a link to its iNaturalist page instead — both patterns
+          already in real use on Wikidata. Not linked? For a user, an iNaturalist profile's ORCID
+          (when set) is checked against <code>P496</code> first — far more reliable than matching by
+          name — before falling back to a plain label search; a project only has the label search.
+          Either way you get a QuickStatements draft: add the identifier to a candidate that turned
+          up, or create a new item outright. New-human-item drafts carry an explicit notability
+          warning — being an iNaturalist contributor alone doesn't make someone notable on Wikidata.
         </li>
         <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
