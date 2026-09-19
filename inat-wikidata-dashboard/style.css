@@ -127,6 +127,38 @@ button:disabled { opacity: 0.5; cursor: default; }
   line-height: 1.4;
 }
 
+.identity-panel {
+  margin: -8px 0 20px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.9rem;
+}
+
+.identity-panel .identity-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.identity-panel .candidates {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+}
+
+.identity-panel .candidates li {
+  margin-bottom: 4px;
+}
+
+.identity-panel .identity-note {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin: 8px 0 0;
+}
+
 .log-header {
   font-weight: 600;
   margin-bottom: 2px;
