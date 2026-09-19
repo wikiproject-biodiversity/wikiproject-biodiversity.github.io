@@ -171,6 +171,20 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   Commons' allow-list, and only for the license types in `COMMONS_COMPATIBLE_LICENSES`
   (`app.js`) — if Commons ever removes iNaturalist's S3 host from the list, the button will
   correctly show "⚠ not on Commons' upload allow-list" rather than silently failing.
+- Batching against QLever/WDQS is tuned for hackathon-scale projects, not a single
+  iNaturalist user's entire life list. A user with thousands of observations (tested
+  against one with ~2200 distinct taxa) can still trip QLever's own rate limit on the
+  very first batch, and WDQS can time out even on the reduced "QLever missed this"
+  subset the fallback sends it — both endpoints are public services this tool has no
+  control over. `runBatchedStep` retries with backoff (longer, dedicated backoff
+  specifically for a `429`, detected by string-matching the error text since Comunica
+  exposes no structured status code) and paces successive batches 200ms apart, and
+  `WDQS_BATCH_SIZE` (25, vs `BATCH_SIZE` 100 for QLever) sends WDQS smaller requests
+  than QLever gets — but there's no amount of client-side pacing that guarantees a
+  shared public endpoint responds quickly under someone else's load, or under this
+  tool's own cumulative load from a long testing session. Worst case, a step logs its
+  failure and moves on with whatever QLever alone already found (see the `catch` blocks
+  in `resolveWikidata`/`resolveSitelinks`) rather than hanging.
 - One SPARQL batch per 40 taxa; fine for hackathon-scale projects, untested at
   iNaturalist's largest project sizes (BATCH_SIZE in `app.js` is the place to tune
   this, alongside the `MAX_OBSERVATIONS` safety cap).
