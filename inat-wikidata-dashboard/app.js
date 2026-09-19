@@ -849,7 +849,8 @@ function describeParentResolution(ctx) {
 
 // ---------- UI ----------
 
-const statusEl = document.getElementById('status');
+const statusHeaderEl = document.getElementById('statusHeader');
+const statusLogEl = document.getElementById('statusLog');
 const runBtn = document.getElementById('runBtn');
 const scopeTypeSelect = document.getElementById('scopeType');
 const projectInput = document.getElementById('projectInput');
@@ -872,22 +873,26 @@ scopeTypeSelect.addEventListener('change', () => {
 let currentTaxa = [];
 let currentFilter = 'all';
 
+// Endpoints under load occasionally return an HTML error/gateway-timeout page instead
+// of a SPARQL error — and Comunica's own error message can embed that page's full body
+// verbatim. Collapse whitespace and cap the length so one pathological message can't
+// flood the log (or, as happened once, visually overlap the header above it).
+function sanitizeLogMessage(msg) {
+  const collapsed = String(msg).replace(/\s+/g, ' ').trim();
+  const MAX = 240;
+  return collapsed.length > MAX ? collapsed.slice(0, MAX) + '… (truncated)' : collapsed;
+}
+
 function log(msg, isErr) {
   const line = document.createElement('div');
   line.className = 'log-line' + (isErr ? ' err' : '');
-  line.textContent = msg;
-  statusEl.appendChild(line);
-  statusEl.scrollTop = statusEl.scrollHeight;
+  line.textContent = sanitizeLogMessage(msg);
+  statusLogEl.appendChild(line);
+  statusLogEl.scrollTop = statusLogEl.scrollHeight;
 }
 
 function setStatusHeader(msg) {
-  const header = statusEl.querySelector('.log-header') || (() => {
-    const h = document.createElement('div');
-    h.className = 'log-header';
-    h.style.fontWeight = '600';
-    statusEl.prepend(h);
-    return h;
-  })();
+  const header = statusHeaderEl;
   header.textContent = msg;
 }
 
@@ -1237,7 +1242,8 @@ async function run() {
   if (!scopeValue) return;
   const noun = scopeType === 'user' ? 'user' : 'project';
   runBtn.disabled = true;
-  statusEl.innerHTML = '';
+  statusHeaderEl.textContent = '';
+  statusLogEl.innerHTML = '';
   statsEl.hidden = true;
   filtersEl.hidden = true;
   tableWrapEl.hidden = true;
