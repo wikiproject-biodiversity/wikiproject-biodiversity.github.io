@@ -56,9 +56,8 @@ a { color: var(--link); }
 }
 
 .logo {
-  width: 64px;
-  height: 64px;
-  object-fit: contain;
+  height: 52px;
+  width: auto;
   flex-shrink: 0;
 }
 
