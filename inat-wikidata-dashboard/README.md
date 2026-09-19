@@ -1,8 +1,8 @@
 # iNaturalist ↔ Wikidata / Wikipedia / GBIF / BHL dashboard
 
 A static, client-side JavaScript tool that cross-references the taxa observed in an
-[iNaturalist](https://www.inaturalist.org) project against
-[Wikidata](https://www.wikidata.org), and flags which ones are still missing a
+[iNaturalist](https://www.inaturalist.org) project — or by a specific iNaturalist user —
+against [Wikidata](https://www.wikidata.org), and flags which ones are still missing a
 Wikipedia article in English, Japanese and/or Spanish. Inspired by
 [iNotListed](https://github.com/wikiproject-biodiversity/iNotListed), reimplemented as
 a browser tool with [Comunica](https://comunica.dev) doing the SPARQL federation
@@ -20,13 +20,14 @@ imports and the SPARQL fetches to behave):
 python3 -m http.server 8734
 ```
 
-Then open <http://localhost:8734/>, confirm/change the project slug (defaults to
-`biohackathon-2026`), and click **Load observations**.
+Then open <http://localhost:8734/>, pick **Project** or **User** as the scope, confirm/change
+the value (defaults to the project `biohackathon-2026`), and click **Load observations**.
 
 ## How it works
 
-1. **iNaturalist REST API** — paginates through every observation in the project and
-   collects the distinct taxa (scientific name, common name, photo, observation count).
+1. **iNaturalist REST API** — paginates through every observation in the chosen project or by
+   the chosen user (`project_id=` / `user_id=`, both accept either a slug/login or a numeric id)
+   and collects the distinct taxa (scientific name, common name, photo, observation count).
 2. **Comunica → [QLever](https://qlever.cs.uni-freiburg.de/wikidata)'s Wikidata
    mirror** — resolves each scientific name to a Wikidata item (`wdt:P225`) and reads
    off cross-reference identifiers already stored there: GBIF (`P846`), iNaturalist
