@@ -24,7 +24,8 @@ const LANGS = [
   { code: 'es', wiki: 'https://es.wikipedia.org/' },
 ];
 
-const BATCH_SIZE = 40;
+const BATCH_SIZE = 100; // VALUES lists this size run in well under 200ms on QLever (tested); bigger batches means fewer requests, which matters more than batch size for staying under a public endpoint's rate limit
+const WDQS_BATCH_SIZE = 25; // WDQS itself, not just QLever, evidently struggles with 100-item VALUES lists under current load (observed timing out even on the already-reduced "misses only" re-check set) — smaller requests to the one endpoint this tool can't avoid entirely
 const MAX_OBSERVATIONS = 5000; // safety cap for a single run
 
 let comunicaEngine = null;
@@ -64,7 +65,14 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', sil
       // Always logged, even when silent: a failed/retried batch is exactly the kind of
       // thing the aggregate summary line (logged by the caller) would otherwise hide.
       log(`${label || endpoint} — attempt ${attempt + 1} failed: ${e.message}`, true);
-      if (attempt < retries) await sleep(800 * (attempt + 1));
+      if (attempt < retries) {
+        // A 429 means "you're going too fast", not "try again in a moment" — backing off
+        // on the same short schedule as a generic timeout just trips it again on the next
+        // batch. Comunica surfaces the status in the error text (there's no structured
+        // code to read), so detect it there and wait substantially longer.
+        const isRateLimited = /\b429\b/.test(e.message);
+        await sleep(isRateLimited ? 4000 * (attempt + 1) : 800 * (attempt + 1));
+      }
     }
   }
   throw lastErr;
@@ -74,12 +82,17 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', sil
 // per-batch SPARQL log line silent, then logs ONE aggregate line for the whole step —
 // large projects can mean dozens of batches per step, and a line each turns the log into
 // an unscrollable wall of near-identical text. `fn` returns the row count for its batch.
-async function runBatchedStep(items, label, fn) {
-  const batches = chunk(items, BATCH_SIZE);
+async function runBatchedStep(items, label, fn, batchSize = BATCH_SIZE) {
+  const batches = chunk(items, batchSize);
   const t0 = performance.now();
   let totalRows = 0;
-  for (const batch of batches) {
-    totalRows += await fn(batch);
+  for (let i = 0; i < batches.length; i++) {
+    totalRows += await fn(batches[i]);
+    // A short gap between requests, not just within retries of one — a public endpoint's
+    // rate limit is usually requests-per-window, and firing dozens of successful batches
+    // back to back (each takes well under a second) can look like a burst even with no
+    // single request being slow. Skipped after the last batch so it doesn't pad the tail.
+    if (i < batches.length - 1) await sleep(200);
   }
   const n = batches.length;
   log(`${label} — ${n} batch${n === 1 ? '' : 'es'}, ${items.length} item${items.length === 1 ? '' : 's'}, ${totalRows} row${totalRows === 1 ? '' : 's'}, ${Math.round(performance.now() - t0)}ms`);
@@ -241,7 +254,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
         const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
         for (const r of rows) pushWikidataCandidate(byName, r);
         return rows.length;
-      });
+      }, WDQS_BATCH_SIZE);
     } catch (e) {
       log(`WDQS re-check failed (${e.message}) — keeping QLever's ${unmatched.length} unmatched as-is`, true);
     }
@@ -318,7 +331,7 @@ async function resolveSitelinks(taxa) {
           byQid.set(qid, langs);
         }
         return rows.length;
-      });
+      }, WDQS_BATCH_SIZE);
     } catch (e) {
       log(`WDQS re-check failed (${e.message}) — keeping QLever's answer for ${toRecheck.length} taxa as-is`, true);
     }
