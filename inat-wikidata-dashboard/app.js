@@ -847,6 +847,137 @@ function describeParentResolution(ctx) {
     `Not added automatically (P171 omitted) — this is a real discrepancy between databases, not a bug; resolve it manually.`;
 }
 
+// ---------- Identity linking: is the iNaturalist project/user itself on Wikidata? ----------
+// Distinct from the per-taxon QuickStatements above — this is about the *scope* being
+// explored (the project or user entered at the top), not the species observed in it.
+
+const P_INAT_USER_ID = 'P12022'; // "numeric identifier for a person who contributes to iNaturalist" — values in the wild are a mix of login and numeric id, both accepted by inaturalist.org/people/<either>
+const Q_HUMAN = 'Q5';
+const Q_CITIZEN_SCIENCE_PROJECT = 'Q24577212';
+
+async function fetchINatUser(login) {
+  const res = await fetch(`${INAT_API}/users/${encodeURIComponent(login)}`, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`iNaturalist user lookup HTTP ${res.status}`);
+  const json = await res.json();
+  if (!json.results || !json.results.length) throw new Error(`iNaturalist user "${login}" not found`);
+  return json.results[0];
+}
+
+async function fetchINatProject(slug) {
+  const res = await fetch(`${INAT_API}/projects/${encodeURIComponent(slug)}`, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`iNaturalist project lookup HTTP ${res.status}`);
+  const json = await res.json();
+  if (!json.results || !json.results.length) throw new Error(`iNaturalist project "${slug}" not found`);
+  return json.results[0];
+}
+
+// P12022 values in the wild are a mix of login strings and numeric ids (both work on
+// inaturalist.org/people/), so check both forms in one query rather than picking one.
+async function checkUserOnWikidata(inatUser) {
+  const values = [inatUser.login, String(inatUser.id)].map(sparqlStringLiteral).join(' ');
+  const rows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?item WHERE { ?item wdt:${P_INAT_USER_ID} ?v . VALUES ?v { ${values} } } LIMIT 1`,
+    QLEVER_ENDPOINT, { silent: true }
+  );
+  return rows.length ? rows[0].item.split('/').pop() : null;
+}
+
+// No dedicated "iNaturalist project ID" Wikidata property exists (checked: none found).
+// Real-world precedent instead links the project's iNaturalist URL via P856 (official
+// website, the common case) or P973 (described at URL, seen occasionally) — so check both.
+async function checkProjectOnWikidata(inatProject) {
+  const needle = sparqlStringLiteral(`inaturalist.org/projects/${inatProject.slug}`);
+  const rows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?item WHERE {
+  { ?item wdt:P856 ?url . FILTER(CONTAINS(STR(?url), ${needle})) }
+  UNION
+  { ?item wdt:P973 ?url . FILTER(CONTAINS(STR(?url), ${needle})) }
+} LIMIT 1`,
+    QLEVER_ENDPOINT, { silent: true }
+  );
+  return rows.length ? rows[0].item.split('/').pop() : null;
+}
+
+// Far more reliable than name matching: an iNaturalist profile can carry a verified
+// ORCID, and ORCID iDs are close to unambiguous on Wikidata.
+async function findWikidataHumanByOrcid(orcidUrl) {
+  if (!orcidUrl) return null;
+  const orcidId = orcidUrl.replace(/^https?:\/\/orcid\.org\//, '');
+  const rows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?item WHERE { ?item wdt:P496 ${sparqlStringLiteral(orcidId)} } LIMIT 1`,
+    QLEVER_ENDPOINT, { silent: true }
+  );
+  return rows.length ? { qid: rows[0].item.split('/').pop(), via: 'orcid' } : null;
+}
+
+// Last resort, and the least reliable: a plain label search. Always presented as
+// "possible match, verify yourself" — never auto-selected the way GBIF/NCBI ids are for
+// taxon parents, because two different people (or projects) sharing a name is common.
+async function searchWikidataCandidates(name, { humansOnly = false } = {}) {
+  const res = await fetch(
+    `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}` +
+    `&language=en&type=item&format=json&origin=*&limit=5`
+  );
+  if (!res.ok) return [];
+  const json = await res.json();
+  let candidates = (json.search || []).map(r => ({ qid: r.id, label: r.label || r.id, description: r.description || '' }));
+  if (humansOnly && candidates.length) {
+    const values = candidates.map(c => `wd:${c.qid}`).join(' ');
+    const rows = await sparqlViaComunica(
+      `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?item WHERE { VALUES ?item { ${values} } ?item wdt:P31 wd:${Q_HUMAN} . }`,
+      QLEVER_ENDPOINT, { silent: true }
+    );
+    const humanQids = new Set(rows.map(r => r.item.split('/').pop()));
+    candidates = candidates.filter(c => humanQids.has(c.qid));
+  }
+  return candidates;
+}
+
+function qsAddClaim(qid, prop, value, refQid) {
+  return `${qid}\t${prop}\t${qsString(value)}\tS248\t${refQid}`;
+}
+
+// mode: 'add' writes one claim onto an existing item (targetQid); 'create' drafts a
+// whole new item. A brand-new "human" item needs a human to actually be notable by
+// Wikidata's standards — being an iNaturalist contributor alone isn't — so this is
+// deliberately the secondary path, not the one offered first.
+function buildUserIdentityQS(inatUser, mode, targetQid) {
+  if (mode === 'add') {
+    return qsAddClaim(targetQid, P_INAT_USER_ID, String(inatUser.id), QS_REF_INATURALIST);
+  }
+  const lines = ['CREATE'];
+  const displayName = inatUser.name || inatUser.login;
+  lines.push(`LAST\tP31\tQ${Q_HUMAN.slice(1)}`);
+  lines.push(`LAST\t${P_INAT_USER_ID}\t${qsString(String(inatUser.id))}\tS248\t${QS_REF_INATURALIST}`);
+  lines.push(`LAST\tLen\t${qsString(displayName)}`);
+  lines.push(`LAST\tLmul\t${qsString(displayName)}`);
+  lines.push(`LAST\tDen\t${qsString('contributor on iNaturalist')}`);
+  lines.push(`LAST\tP856\t${qsString(`https://www.inaturalist.org/people/${inatUser.login}`)}`);
+  if (inatUser.orcid) {
+    lines.push(`LAST\tP496\t${qsString(inatUser.orcid.replace(/^https?:\/\/orcid\.org\//, ''))}`);
+  }
+  return lines.join('\n');
+}
+
+function buildProjectIdentityQS(inatProject, mode, targetQid) {
+  const url = `https://www.inaturalist.org/projects/${inatProject.slug}`;
+  if (mode === 'add') {
+    return qsAddClaim(targetQid, 'P856', url, QS_REF_INATURALIST);
+  }
+  const lines = ['CREATE'];
+  lines.push(`LAST\tP31\t${Q_CITIZEN_SCIENCE_PROJECT}`);
+  lines.push(`LAST\tP856\t${qsString(url)}\tS248\t${QS_REF_INATURALIST}`);
+  lines.push(`LAST\tLen\t${qsString(inatProject.title)}`);
+  lines.push(`LAST\tLmul\t${qsString(inatProject.title)}`);
+  lines.push(`LAST\tDen\t${qsString('citizen science project on iNaturalist')}`);
+  return lines.join('\n');
+}
+
 // ---------- UI ----------
 
 const statusHeaderEl = document.getElementById('statusHeader');
@@ -859,6 +990,7 @@ const statsEl = document.getElementById('stats');
 const filtersEl = document.getElementById('filters');
 const tableWrapEl = document.getElementById('tableWrap');
 const tbody = document.getElementById('taxaBody');
+const identityPanelEl = document.getElementById('identityPanel');
 
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
@@ -1224,6 +1356,114 @@ document.getElementById('filters').addEventListener('click', (e) => {
   renderTable();
 });
 
+// ---------- Identity panel rendering ----------
+
+let identityState = null; // { scopeType, record, linkedQid, orcidMatch, nameCandidates }
+
+function identityNoun(scopeType) { return scopeType === 'user' ? 'user' : 'project'; }
+
+async function checkIdentityLinking(scopeType, scopeValue) {
+  identityPanelEl.hidden = false;
+  identityPanelEl.innerHTML = `<div class="identity-row">Checking whether this ${identityNoun(scopeType)} is linked on Wikidata…</div>`;
+
+  try {
+    const record = scopeType === 'user' ? await fetchINatUser(scopeValue) : await fetchINatProject(scopeValue);
+    const linkedQid = scopeType === 'user' ? await checkUserOnWikidata(record) : await checkProjectOnWikidata(record);
+
+    let orcidMatch = null;
+    let nameCandidates = [];
+    if (!linkedQid) {
+      if (scopeType === 'user') {
+        orcidMatch = await findWikidataHumanByOrcid(record.orcid).catch(() => null);
+        if (!orcidMatch) {
+          nameCandidates = await searchWikidataCandidates(record.name || record.login, { humansOnly: true }).catch(() => []);
+        }
+      } else {
+        nameCandidates = await searchWikidataCandidates(record.title, { humansOnly: false }).catch(() => []);
+      }
+    }
+
+    identityState = { scopeType, record, linkedQid, orcidMatch, nameCandidates };
+    renderIdentityPanel();
+  } catch (err) {
+    identityPanelEl.innerHTML = `<div class="identity-row">Could not check Wikidata linkage: ${err.message}</div>`;
+  }
+}
+
+function renderIdentityPanel() {
+  const { scopeType, record, linkedQid, orcidMatch, nameCandidates } = identityState;
+  const noun = identityNoun(scopeType);
+  const displayName = scopeType === 'user' ? (record.name || record.login) : record.title;
+  const inatUrl = scopeType === 'user'
+    ? `https://www.inaturalist.org/people/${record.login}`
+    : `https://www.inaturalist.org/projects/${record.slug}`;
+
+  if (linkedQid) {
+    identityPanelEl.innerHTML = `<div class="identity-row">
+      ✓ iNaturalist ${noun} <a href="${inatUrl}" target="_blank" rel="noopener">${displayName}</a>
+      is linked on Wikidata: <a href="https://www.wikidata.org/wiki/${linkedQid}" target="_blank" rel="noopener">${linkedQid}</a>
+    </div>`;
+    return;
+  }
+
+  const rowId = `identity-qs-${Date.now()}`;
+  let candidatesHtml = '';
+  if (orcidMatch) {
+    candidatesHtml = `<ul class="candidates">
+      <li>Matched by ORCID: <a href="https://www.wikidata.org/wiki/${orcidMatch.qid}" target="_blank" rel="noopener">${orcidMatch.qid}</a>
+        <button class="small-btn identity-add-btn" data-qid="${orcidMatch.qid}">add identifier to this item</button>
+      </li>
+    </ul>`;
+  } else if (nameCandidates.length) {
+    candidatesHtml = `<ul class="candidates">${nameCandidates.map(c => `
+      <li>Possible match: <a href="https://www.wikidata.org/wiki/${c.qid}" target="_blank" rel="noopener">${c.qid}</a>
+        — ${c.label}${c.description ? ` <em>(${c.description})</em>` : ''}
+        <button class="small-btn identity-add-btn" data-qid="${c.qid}">add identifier to this item</button>
+      </li>`).join('')}</ul>
+      <p class="identity-note">Name matches only — unlike the taxon-parent lookups elsewhere in this tool, these are not backed by a stable id, so verify each one is really the same ${noun} before using it.</p>`;
+  }
+
+  identityPanelEl.innerHTML = `<div class="identity-row">
+      ✗ iNaturalist ${noun} <a href="${inatUrl}" target="_blank" rel="noopener">${displayName}</a> is not yet linked on Wikidata.
+      <button class="small-btn identity-create-btn">Propose creating a new item</button>
+    </div>
+    ${candidatesHtml}
+    <div id="${rowId}-panel"></div>`;
+}
+
+function showIdentityQsDraft(commands, label) {
+  const rowId = `identity-textarea-${Date.now()}`;
+  const panel = document.createElement('div');
+  panel.className = 'identity-row';
+  panel.style.marginTop = '10px';
+  panel.innerHTML = `<div style="width:100%">
+    ${label}
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+  </div>`;
+  identityPanelEl.appendChild(panel);
+}
+
+identityPanelEl.addEventListener('click', (e) => {
+  const addBtn = e.target.closest('.identity-add-btn');
+  const createBtn = e.target.closest('.identity-create-btn');
+  if (!addBtn && !createBtn) return;
+  if (!identityState) return;
+  const { scopeType, record } = identityState;
+  const builder = scopeType === 'user' ? buildUserIdentityQS : buildProjectIdentityQS;
+  if (addBtn) {
+    const qid = addBtn.dataset.qid;
+    const commands = builder(record, 'add', qid);
+    showIdentityQsDraft(commands, `Adds the iNaturalist identifier to <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>:`);
+  } else {
+    const commands = builder(record, 'create', null);
+    showIdentityQsDraft(commands, `Draft to create a new Wikidata item${scopeType === 'user' ? ' — review notability before using this; being an iNaturalist contributor alone is not enough' : ''}:`);
+  }
+});
+
 function updateStats() {
   const total = currentTaxa.length;
   const resolved = currentTaxa.filter(t => t.wikidata).length;
@@ -1247,7 +1487,13 @@ async function run() {
   statsEl.hidden = true;
   filtersEl.hidden = true;
   tableWrapEl.hidden = true;
+  identityPanelEl.hidden = true;
+  identityState = null;
   currentTaxa = [];
+
+  // Independent of the taxa pipeline below (it's about the scope itself, not the
+  // species observed in it), so it runs concurrently rather than blocking on it.
+  checkIdentityLinking(scopeType, scopeValue);
 
   try {
     setStatusHeader(`Fetching observations for ${noun} "${scopeValue}"…`);
