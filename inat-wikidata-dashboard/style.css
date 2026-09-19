@@ -320,7 +320,15 @@ footer {
   font-size: 0.78rem;
 }
 
-footer p { margin: 0; }
+footer p { margin: 0 0 10px; }
+footer p:last-child { margin-bottom: 0; }
+
+.tagline {
+  font-size: 0.85rem;
+  font-style: italic;
+  color: var(--text);
+}
+.tagline a { font-style: normal; }
 
 .log-line { opacity: 0.85; overflow-wrap: anywhere; }
 .log-line.err { color: var(--danger-text); }
