@@ -125,15 +125,17 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 0.85rem;
   color: var(--text-dim);
   line-height: 1.4;
-  max-height: 8.4em; /* header line + ~6 log lines before scrolling kicks in */
-  overflow-y: auto;
 }
 
 .log-header {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  padding-bottom: 2px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.status-log {
+  max-height: 7em; /* ~6 log lines before scrolling kicks in */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .stats {
@@ -289,5 +291,5 @@ footer {
 
 footer p { margin: 0; }
 
-.log-line { opacity: 0.85; }
+.log-line { opacity: 0.85; overflow-wrap: anywhere; }
 .log-line.err { color: var(--danger-text); }
