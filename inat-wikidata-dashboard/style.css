@@ -94,15 +94,17 @@ header h1 {
   color: var(--text-dim);
 }
 
-.controls input {
+.controls input,
+.controls select {
   font-size: 0.95rem;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
-  min-width: 240px;
 }
+
+.controls input { min-width: 240px; }
 
 button {
   font-size: 0.9rem;
