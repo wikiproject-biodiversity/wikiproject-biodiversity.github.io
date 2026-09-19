@@ -114,7 +114,12 @@
           anything missing is the "not listed" signal this tool is for. Only taxa with at least one
           missing language get re-verified against live WDQS, since (again) this tool's whole
           purpose is flagging what's missing, and a stale "missing" would wrongly send someone to
-          write an article that already exists.
+          write an article that already exists. Batches are paced 200ms apart and a <code>429</code>
+          gets a longer, dedicated backoff rather than the same short retry as any other error —
+          both public endpoints can still rate-limit or time out under real load (a single
+          iNaturalist user's full observation history, or this tool's own testing volume on a given
+          day), in which case a step logs the failure and moves on with whatever QLever alone
+          already found rather than hanging indefinitely.
         </li>
         <li>
           <strong>Comunica → Plazi TreatmentBank (QLever)</strong> — a third query checks
