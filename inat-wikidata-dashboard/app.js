@@ -189,9 +189,21 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress) {
 
 // ---------- Wikidata resolution ----------
 
+function pushWikidataCandidate(byName, r) {
+  const list = byName.get(r.taxonLabel) || [];
+  list.push({
+    qid: r.wdTaxon.split('/').pop(),
+    uri: r.wdTaxon,
+    gbif: r.gbif || null,
+    inat: r.inat || null,
+    commonsCat: r.commonsCat || null,
+  });
+  byName.set(r.taxonLabel, list);
+}
+
 async function resolveWikidata(taxa) {
   const byName = new Map();
-  await runBatchedStep(taxa, 'Wikidata lookup', async (batch) => {
+  await runBatchedStep(taxa, 'Wikidata lookup (QLever)', async (batch) => {
     const values = batch.map(t => sparqlStringLiteral(t.name)).join(' ');
     const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
@@ -202,19 +214,38 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
   OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
 }`;
     const rows = await sparqlViaComunica(query, QLEVER_ENDPOINT, { silent: true });
-    for (const r of rows) {
-      const list = byName.get(r.taxonLabel) || [];
-      list.push({
-        qid: r.wdTaxon.split('/').pop(),
-        uri: r.wdTaxon,
-        gbif: r.gbif || null,
-        inat: r.inat || null,
-        commonsCat: r.commonsCat || null,
-      });
-      byName.set(r.taxonLabel, list);
-    }
+    for (const r of rows) pushWikidataCandidate(byName, r);
     return rows.length;
   });
+
+  // QLever's Wikidata mirror is a periodic dump import (observed ~6 weeks stale on
+  // 2026-09-19, via wikibase:Dump schema:dateModified) — fine for a match (an item
+  // that existed 6 weeks ago still exists), useless as proof of absence. A taxon QLever
+  // found nothing for might just be too recent for the snapshot, and mistaking that for
+  // "not on Wikidata" is exactly the failure mode that would make the QuickStatements
+  // "propose creating a new item" flow draft a duplicate — so re-check only the misses,
+  // against live WDQS, rather than trusting a negative from a stale copy.
+  const unmatched = taxa.filter(t => !(byName.get(t.name) || []).length);
+  if (unmatched.length) {
+    try {
+      await runBatchedStep(unmatched, 'Wikidata lookup — re-checking QLever misses against live WDQS', async (batch) => {
+        const values = batch.map(t => sparqlStringLiteral(t.name)).join(' ');
+        const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
+  VALUES ?taxonLabel { ${values} }
+  ?wdTaxon wdt:P225 ?taxonLabel .
+  OPTIONAL { ?wdTaxon wdt:P846 ?gbif }
+  OPTIONAL { ?wdTaxon wdt:P3151 ?inat }
+  OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
+}`;
+        const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
+        for (const r of rows) pushWikidataCandidate(byName, r);
+        return rows.length;
+      });
+    } catch (e) {
+      log(`WDQS re-check failed (${e.message}) — keeping QLever's ${unmatched.length} unmatched as-is`, true);
+    }
+  }
 
   for (const t of taxa) {
     const candidates = byName.get(t.name) || [];
@@ -235,6 +266,15 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
 
 // ---------- Wikipedia sitelinks ----------
 
+function sitelinkQuery(values, selectVars, optionals) {
+  return `PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX schema: <http://schema.org/>
+SELECT ?wdTaxon ${selectVars} WHERE {
+  VALUES ?wdTaxon { ${values} }
+  ${optionals}
+}`;
+}
+
 async function resolveSitelinks(taxa) {
   const withWd = taxa.filter(t => t.wikidata);
   const optionals = LANGS.map(l =>
@@ -243,15 +283,10 @@ async function resolveSitelinks(taxa) {
   const selectVars = LANGS.map(l => `?article_${l.code}`).join(' ');
 
   const byQid = new Map();
-  await runBatchedStep(withWd, 'Wikipedia sitelinks', async (batch) => {
+  // QLever primary (fast, avoids WDQS's rate-limiting under this tool's batch load).
+  await runBatchedStep(withWd, 'Wikipedia sitelinks (QLever)', async (batch) => {
     const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
-    const query = `PREFIX wd: <http://www.wikidata.org/entity/>
-PREFIX schema: <http://schema.org/>
-SELECT ?wdTaxon ${selectVars} WHERE {
-  VALUES ?wdTaxon { ${values} }
-  ${optionals}
-}`;
-    const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
+    const rows = await sparqlViaComunica(sitelinkQuery(values, selectVars, optionals), QLEVER_ENDPOINT, { silent: true });
     for (const r of rows) {
       const qid = r.wdTaxon.split('/').pop();
       const langs = {};
@@ -260,6 +295,34 @@ SELECT ?wdTaxon ${selectVars} WHERE {
     }
     return rows.length;
   });
+
+  // Same staleness reasoning as resolveWikidata: a sitelink QLever found is still
+  // real, but "no sitelink" from a ~6-week-old snapshot could just mean the Wikipedia
+  // article was written more recently than that — precisely the false negative this
+  // tool exists to avoid (it would tell someone to write an article that already
+  // exists). Re-verify only the QIDs with at least one missing language against live
+  // WDQS, and let its answer replace QLever's for just those.
+  const toRecheck = withWd.filter(t => {
+    const langs = byQid.get(t.wikidata.qid);
+    return !langs || LANGS.some(l => !langs[l.code]);
+  });
+  if (toRecheck.length) {
+    try {
+      await runBatchedStep(toRecheck, 'Wikipedia sitelinks — re-checking QLever misses against live WDQS', async (batch) => {
+        const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
+        const rows = await sparqlViaComunica(sitelinkQuery(values, selectVars, optionals), WDQS_ENDPOINT, { silent: true });
+        for (const r of rows) {
+          const qid = r.wdTaxon.split('/').pop();
+          const langs = {};
+          for (const l of LANGS) langs[l.code] = r[`article_${l.code}`] || null;
+          byQid.set(qid, langs);
+        }
+        return rows.length;
+      });
+    } catch (e) {
+      log(`WDQS re-check failed (${e.message}) — keeping QLever's answer for ${toRecheck.length} taxa as-is`, true);
+    }
+  }
 
   for (const t of withWd) {
     t.wikipedia = byQid.get(t.wikidata.qid) || Object.fromEntries(LANGS.map(l => [l.code, null]));
@@ -664,12 +727,29 @@ async function fetchNcbiTaxonId(name) {
   return ids.length === 1 ? ids[0] : null;
 }
 
+// Every single-row "does X already exist on Wikidata" lookup in this tool goes through
+// here. Same staleness logic as the batched pipeline (QLever's Wikidata mirror runs
+// ~6 weeks behind live, per wikibase:Dump schema:dateModified) — trust a match, but a
+// miss from QLever could just mean "too recent for the snapshot", and these lookups
+// specifically feed the "propose creating a new item" flows, where a false negative
+// means drafting a duplicate. So a QLever miss gets one live WDQS re-check before it's
+// treated as a real "not found".
+async function sparqlFirstRowWithFallback(query, label) {
+  const primary = await sparqlViaComunica(query, QLEVER_ENDPOINT, { silent: true });
+  if (primary.length) return primary;
+  try {
+    return await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
+  } catch (e) {
+    log(`WDQS re-check failed for "${label}" (${e.message}) — trusting QLever's empty result`, true);
+    return [];
+  }
+}
+
 async function resolveWikidataByExternalId(prop, value) {
-  const rows = await sparqlViaComunica(
+  const rows = await sparqlFirstRowWithFallback(
     `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?wdTaxon WHERE { ?wdTaxon wdt:${prop} ${sparqlStringLiteral(String(value))} } LIMIT 1`,
-    QLEVER_ENDPOINT,
-    { label: `Wikidata lookup by ${prop}=${value}` }
+    `Wikidata lookup by ${prop}=${value}`
   );
   return rows.length ? rows[0].wdTaxon.split('/').pop() : null;
 }
@@ -875,10 +955,10 @@ async function fetchINatProject(slug) {
 // inaturalist.org/people/), so check both forms in one query rather than picking one.
 async function checkUserOnWikidata(inatUser) {
   const values = [inatUser.login, String(inatUser.id)].map(sparqlStringLiteral).join(' ');
-  const rows = await sparqlViaComunica(
+  const rows = await sparqlFirstRowWithFallback(
     `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?item WHERE { ?item wdt:${P_INAT_USER_ID} ?v . VALUES ?v { ${values} } } LIMIT 1`,
-    QLEVER_ENDPOINT, { silent: true }
+    `iNaturalist user ${inatUser.login} on Wikidata`
   );
   return rows.length ? rows[0].item.split('/').pop() : null;
 }
@@ -888,14 +968,14 @@ SELECT ?item WHERE { ?item wdt:${P_INAT_USER_ID} ?v . VALUES ?v { ${values} } } 
 // website, the common case) or P973 (described at URL, seen occasionally) — so check both.
 async function checkProjectOnWikidata(inatProject) {
   const needle = sparqlStringLiteral(`inaturalist.org/projects/${inatProject.slug}`);
-  const rows = await sparqlViaComunica(
+  const rows = await sparqlFirstRowWithFallback(
     `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?item WHERE {
   { ?item wdt:P856 ?url . FILTER(CONTAINS(STR(?url), ${needle})) }
   UNION
   { ?item wdt:P973 ?url . FILTER(CONTAINS(STR(?url), ${needle})) }
 } LIMIT 1`,
-    QLEVER_ENDPOINT, { silent: true }
+    `iNaturalist project ${inatProject.slug} on Wikidata`
   );
   return rows.length ? rows[0].item.split('/').pop() : null;
 }
@@ -905,10 +985,10 @@ SELECT ?item WHERE {
 async function findWikidataHumanByOrcid(orcidUrl) {
   if (!orcidUrl) return null;
   const orcidId = orcidUrl.replace(/^https?:\/\/orcid\.org\//, '');
-  const rows = await sparqlViaComunica(
+  const rows = await sparqlFirstRowWithFallback(
     `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 SELECT ?item WHERE { ?item wdt:P496 ${sparqlStringLiteral(orcidId)} } LIMIT 1`,
-    QLEVER_ENDPOINT, { silent: true }
+    `ORCID ${orcidId} on Wikidata`
   );
   return rows.length ? { qid: rows[0].item.split('/').pop(), via: 'orcid' } : null;
 }
