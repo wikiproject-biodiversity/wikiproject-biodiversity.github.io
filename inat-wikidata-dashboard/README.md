@@ -115,6 +115,24 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    yourself after reviewing them — in particular, QuickStatements' own duplicate-item warnings
    are the real safety net here, since this dashboard's own "not found" check is only an exact
    `P225` string match (see the synonym/splits caveat above).
+10. **Is the project/user itself on Wikidata?** — a separate identity panel, unrelated to the
+    per-taxon logic above, runs automatically (concurrently with the taxa pipeline) for whatever
+    scope you entered:
+    - **User**: checked against `P12022` (iNaturalist user ID) — values in the wild are a mix of
+      login and numeric id, so both are checked in one query (see `checkUserOnWikidata()`). Not
+      linked? If the iNaturalist profile has a public ORCID, that's checked against `P496` first
+      (`findWikidataHumanByOrcid()`) — an ORCID match is about as reliable as an id match gets.
+      Only without one does it fall back to a plain label search restricted to humans
+      (`searchWikidataCandidates(name, {humansOnly: true})`), flagged as unverified.
+    - **Project**: no dedicated Wikidata property exists for iNaturalist projects (checked). Real
+      items instead link a project's iNaturalist URL via `P856` (official website — the common
+      case) or occasionally `P973` (described at URL), so `checkProjectOnWikidata()` matches either.
+      Not linked → an unrestricted label search only (no ORCID equivalent for projects).
+    - Either way, the panel offers a QuickStatements draft: add the identifier/URL to a candidate
+      item (`buildUserIdentityQS`/`buildProjectIdentityQS` with `mode: 'add'`), or `CREATE` a new
+      item (`mode: 'create'` — `P31 Q5` human / `Q24577212` citizen science project). A new-human
+      draft carries an explicit notability caution in its UI label: contributing to iNaturalist
+      does not by itself make a person notable enough for a standalone Wikidata item.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
