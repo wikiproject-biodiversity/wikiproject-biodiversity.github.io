@@ -1337,7 +1337,7 @@ function renderTable() {
     const wd = !t.wikidata
       ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
       : t.wikidataInatIdConflict
-        ? `${wdLink} <span class="pill" title="This item has ${t.wikidataInatIdConflict.length} different iNaturalist taxon ids on it (${t.wikidataInatIdConflict.join(', ')}) — likely an old one left behind after a merge/split. Needs a curator to check iNaturalist and remove the stale statement(s); not something to fix by adding another.">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — needs review</span>`
+        ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
         : inatIdLinked(t)
           ? wdLink
           : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
@@ -1451,6 +1451,47 @@ tbody.addEventListener('click', async (e) => {
     btn.disabled = false;
     btn.textContent = originalText;
   }
+});
+
+// The two (or more) P3151 values on the item aren't interchangeable clutter — exactly
+// one of them can be checked against live data (this taxon's OWN current iNaturalist
+// id, fetched this run) without a curator lifting a finger, so lead with that instead of
+// just dumping the raw id list in a tooltip.
+function inatIdConflictDetail(t) {
+  const current = String(t.inatId);
+  const items = t.wikidataInatIdConflict.map(v => {
+    const isCurrent = v === current;
+    const url = `https://www.inaturalist.org/taxa/${v}`;
+    return isCurrent
+      ? `<li>✓ <a href="${url}" target="_blank" rel="noopener">${v}</a> — matches this taxon's current iNaturalist id. Keep this one.</li>`
+      : `<li>⚠ <a href="${url}" target="_blank" rel="noopener">${v}</a> — does not match the current id (${current}). Open it on iNaturalist: if it redirects to ${current}, it's been merged/renamed and this statement is the one to remove from Wikidata.</li>`;
+  }).join('');
+  const hasCurrent = t.wikidataInatIdConflict.includes(current);
+  const guidance = hasCurrent
+    ? `This tool won't remove anything automatically — a stale id could still be intentional (e.g. covering a former taxon concept) — but in the common case it's safe to delete the ⚠ statement(s) after confirming the redirect.`
+    : `None of the ids currently on the item match what iNaturalist calls this taxon today (<a href="https://www.inaturalist.org/taxa/${current}" target="_blank" rel="noopener">${current}</a>) — check each one individually before changing anything on Wikidata.`;
+  return `<em>${t.name}</em> — <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a> carries ${t.wikidataInatIdConflict.length} different iNaturalist taxon id (P3151) statements:
+    <ul>${items}</ul>
+    ${guidance}`;
+}
+
+tbody.addEventListener('click', (e) => {
+  const btn = e.target.closest('.inatconflict-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t || !t.wikidataInatIdConflict) return;
+
+  const row = btn.closest('tr');
+  const nextRow = row.nextElementSibling;
+  if (nextRow && nextRow.classList.contains('inatconflict-row')) {
+    nextRow.remove();
+    return;
+  }
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'bhl-row inatconflict-row';
+  detailRow.innerHTML = `<td></td><td colspan="12">${inatIdConflictDetail(t)}</td>`;
+  row.after(detailRow);
 });
 
 tbody.addEventListener('click', async (e) => {
