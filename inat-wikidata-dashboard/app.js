@@ -1107,10 +1107,16 @@ let currentFilter = 'all';
 
 // Endpoints under load occasionally return an HTML error/gateway-timeout page instead
 // of a SPARQL error — and Comunica's own error message can embed that page's full body
-// verbatim. Collapse whitespace and cap the length so one pathological message can't
-// flood the log (or, as happened once, visually overlap the header above it).
+// verbatim. A GET-based SPARQL error (e.g. "Fetch timed out for <url>?query=...") is
+// its own, more common case of the same problem: the query itself, URL-encoded, is
+// exactly the kind of long-but-uninformative text a 240-char cap alone still leaves as
+// unreadable garbage rather than actually clipping it usefully. So strip query strings
+// off any URL first — almost always the real source of the bloat — then collapse
+// whitespace and cap what's left, so one pathological message still can't flood the log
+// (or, as happened once, visually overlap the header above it).
 function sanitizeLogMessage(msg) {
-  const collapsed = String(msg).replace(/\s+/g, ' ').trim();
+  const withoutQueryStrings = String(msg).replace(/(https?:\/\/[^\s")]+?)\?[^\s")]*/g, '$1');
+  const collapsed = withoutQueryStrings.replace(/\s+/g, ' ').trim();
   const MAX = 240;
   return collapsed.length > MAX ? collapsed.slice(0, MAX) + '… (truncated)' : collapsed;
 }
