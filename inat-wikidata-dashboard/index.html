@@ -50,7 +50,7 @@
   <div class="stat"><span id="statTotal">0</span><label>taxa observed</label></div>
   <div class="stat"><span id="statResolved">0</span><label>matched in Wikidata</label></div>
   <div class="stat warn"><span id="statMissingAny">0</span><label>missing ≥1 Wikipedia</label></div>
-  <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es</label></div>
+  <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es+pt</label></div>
   <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
   <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
 </section>
@@ -58,10 +58,24 @@
 <section id="filters" class="filters" hidden>
   <button class="filter-btn active" data-filter="all">All</button>
   <button class="filter-btn" data-filter="missing-any">Missing ≥1 Wikipedia</button>
-  <button class="filter-btn" data-filter="missing-all">Missing all 3</button>
+  <button class="filter-btn" data-filter="missing-all">Missing all 4</button>
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
   <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
   <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
+</section>
+
+<section id="bulkActions" class="identity-panel" hidden>
+  <div class="identity-row">
+    <button id="bulkInatIdBtn" class="small-btn upload-btn"></button>
+  </div>
+  <div id="bulkInatIdBox" hidden>
+    <p class="identity-note">Proposed QuickStatements to add the iNaturalist taxon id to every matched item below that's missing one — review before running, same as any other batch edit.</p>
+    <div class="stub-toolbar">
+      <button id="bulkInatIdCopyBtn" class="small-btn">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="bulkInatIdTextarea" class="stub-textarea" readonly spellcheck="false"></textarea>
+  </div>
 </section>
 
 <section id="tableWrap" class="table-wrap" hidden>
@@ -78,6 +92,7 @@
         <th>en</th>
         <th>ja</th>
         <th>es</th>
+        <th>pt</th>
         <th>Plazi</th>
         <th>BHL</th>
       </tr>
@@ -126,12 +141,13 @@
         </li>
         <li>
           <strong>Same QLever-first, WDQS-fallback pattern for sitelinks</strong> — checks, for
-          every resolved item, whether an English, Japanese or Spanish Wikipedia
+          every resolved item, whether an English, Japanese, Spanish or Portuguese Wikipedia
           <code>sitelink</code> exists (<code>schema:about</code> / <code>schema:isPartOf</code>);
           anything missing is the "not listed" signal this tool is for. Only taxa with <em>no</em>
-          sitelink in any language get re-verified against live WDQS — missing just Japanese or
-          Spanish isn't re-checked, since species coverage in those languages is inherently sparse
-          and re-querying WDQS for every such partial case is what was overloading it; a stale
+          sitelink in any language get re-verified against live WDQS — missing just one or two of
+          Japanese, Spanish or Portuguese isn't re-checked, since species coverage in those
+          languages is inherently sparse and re-querying WDQS for every such partial case is what
+          was overloading it; a stale
           "missing" for a taxon with no sitelinks at all would wrongly send someone to write an
           article that already exists. Batches are paced 200ms apart and a <code>429</code>
           gets a longer, dedicated backoff rather than the same short retry as any other error —
@@ -181,15 +197,15 @@
           on Commons to actually publish it.
         </li>
         <li>
-          <strong>Draft a stub (on demand)</strong> — click any red ✗ in the en/ja/es columns to draft
-          a starting-point Wikipedia article for that language, in the spirit of
+          <strong>Draft a stub (on demand)</strong> — click any red ✗ in the en/ja/es/pt columns to
+          draft a starting-point Wikipedia article for that language, in the spirit of
           <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>:
           it fetches the taxon's ancestor chain from iNaturalist and its authorship/publication from
           GBIF, then fills in the language's species infobox (<code>{{Speciesbox}}</code> on English
           Wikipedia, <code>{{Ficha de taxón}}</code> on Spanish, <code>{{生物分類表}}</code> on
-          Japanese) plus a lead sentence, reference and <code>{{Taxonbar}}</code>. These are drafts
-          only — nothing is ever posted automatically; review formatting and notability before
-          publishing.
+          Japanese, <code>{{Info/Taxonomia}}</code> on Portuguese) plus a lead sentence, reference
+          and <code>{{Taxonbar}}</code>. These are drafts only — nothing is ever posted
+          automatically; review formatting, the stub template and notability before publishing.
         </li>
         <li>
           <strong>Propose QuickStatements (on demand)</strong> — for a taxon with no Wikidata item at
