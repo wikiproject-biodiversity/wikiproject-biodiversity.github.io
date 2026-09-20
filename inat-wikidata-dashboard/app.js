@@ -89,6 +89,17 @@ async function runBatchedStep(items, label, fn, batchSize = BATCH_SIZE) {
   let totalRows = 0;
   for (let i = 0; i < batches.length; i++) {
     totalRows += await fn(batches[i]);
+    const done = i + 1;
+    // Estimated from THIS step's own pace so far, not a fixed guess — a batch to QLever
+    // and a batch to WDQS cost wildly different amounts, and WDQS's own cost swings with
+    // live load, so the only honest estimate is one that corrects itself as the step
+    // actually runs. Only shown once there's more than one batch to make it worth showing.
+    if (batches.length > 1) {
+      const elapsed = performance.now() - t0;
+      const remaining = batches.length - done;
+      const etaMs = (elapsed / done) * remaining;
+      setStatusProgress(`batch ${done}/${batches.length}${remaining > 0 ? ` (~${formatDuration(etaMs)} remaining)` : ''}`);
+    }
     // A short gap between requests, not just within retries of one — a public endpoint's
     // rate limit is usually requests-per-window, and firing dozens of successful batches
     // back to back (each takes well under a second) can look like a burst even with no
@@ -98,6 +109,15 @@ async function runBatchedStep(items, label, fn, batchSize = BATCH_SIZE) {
   const n = batches.length;
   log(`${label} — ${n} batch${n === 1 ? '' : 'es'}, ${items.length} item${items.length === 1 ? '' : 's'}, ${totalRows} row${totalRows === 1 ? '' : 's'}, ${Math.round(performance.now() - t0)}ms`);
   return totalRows;
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 5) return 'a few seconds';
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
 }
 
 // Plain SPARQL-over-HTTP fetch, for endpoints whose Content-Type header
@@ -1223,8 +1243,17 @@ function log(msg, level) {
   statusLogEl.scrollTop = statusLogEl.scrollHeight;
 }
 
+let currentStatusBase = '';
 function setStatusHeader(msg) {
+  currentStatusBase = msg;
   statusHeaderTextEl.textContent = msg;
+}
+
+// Appends live batch/ETA progress to whatever setStatusHeader last set, without either
+// one needing to know about the other — the next setStatusHeader call (the next step)
+// naturally replaces this along with the base text, so there's nothing to clear.
+function setStatusProgress(progressText) {
+  statusHeaderTextEl.textContent = progressText ? `${currentStatusBase} — ${progressText}` : currentStatusBase;
 }
 
 function taxonMissingCount(t) {
@@ -1811,23 +1840,29 @@ async function run() {
   // species observed in it), so it runs concurrently rather than blocking on it.
   checkIdentityLinking(scopeType, scopeValue);
 
+  // A step count the user can see progress against, however imprecise any single step's
+  // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
+  // isn't knowable until it's running (see runBatchedStep's live ETA for that part).
+  const TOTAL_STEPS = 5;
+  const step = (n, label) => `Step ${n}/${TOTAL_STEPS}: ${label}`;
+
   try {
-    setStatusHeader(`Fetching observations for ${noun} "${scopeValue}"…`);
+    setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"…`));
     const taxa = await fetchScopedTaxa(scopeType, scopeValue, (n, total) => {
-      setStatusHeader(`Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`);
+      setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`));
     });
     log(`${taxa.length} distinct taxa found.`);
 
-    setStatusHeader(`Resolving ${taxa.length} taxa against Wikidata (via Comunica → QLever)…`);
+    setStatusHeader(step(2, `Resolving ${taxa.length} taxa against Wikidata (via Comunica → QLever)…`));
     await resolveWikidata(taxa);
 
-    setStatusHeader(`Checking Wikipedia (en/ja/es/pt) sitelinks (via Comunica → WDQS)…`);
+    setStatusHeader(step(3, `Checking Wikipedia (en/ja/es/pt) sitelinks (via Comunica → WDQS)…`));
     await resolveSitelinks(taxa);
 
-    setStatusHeader(`Checking Plazi TreatmentBank (via Comunica → QLever)…`);
+    setStatusHeader(step(4, `Checking Plazi TreatmentBank (via Comunica → QLever)…`));
     await resolvePlazi(taxa);
 
-    setStatusHeader(`Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`);
+    setStatusHeader(step(5, `Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`));
     await resolveCommonsStatus(taxa);
 
     currentTaxa = taxa;
