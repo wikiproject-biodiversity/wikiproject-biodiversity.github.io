@@ -153,8 +153,13 @@
           gets a longer, dedicated backoff rather than the same short retry as any other error —
           both public endpoints can still rate-limit or time out under real load (a single
           iNaturalist user's full observation history, or this tool's own testing volume on a given
-          day), in which case a step logs the failure and moves on with whatever QLever alone
-          already found rather than hanging indefinitely.
+          day), in which case a step logs the failure — in amber, since a handled fallback isn't a
+          real error — and moves on with whatever QLever alone already found rather than hanging
+          indefinitely. The status header shows which of the 5 pipeline steps is running
+          (<code>Step 3/5: …</code>) and, once a step is a few batches in, a live
+          <code>batch 12/58 (~1m 40s remaining)</code> estimate based on that step's own pace so
+          far — not a single upfront total, since a QLever batch and a WDQS batch cost wildly
+          different amounts and there's no honest way to know which a step will hit before it runs.
         </li>
         <li>
           <strong>Comunica → Plazi TreatmentBank (QLever)</strong> — a third query checks
