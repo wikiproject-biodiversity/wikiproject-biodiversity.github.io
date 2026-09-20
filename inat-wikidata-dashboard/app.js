@@ -1178,6 +1178,11 @@ const bulkInatIdBtn = document.getElementById('bulkInatIdBtn');
 const bulkInatIdBox = document.getElementById('bulkInatIdBox');
 const bulkInatIdTextarea = document.getElementById('bulkInatIdTextarea');
 const bulkInatIdCopyBtn = document.getElementById('bulkInatIdCopyBtn');
+const taxonDetailEl = document.getElementById('taxonDetail');
+const taxonDetailBackBtn = document.getElementById('taxonDetailBack');
+const taxonDetailHeaderEl = document.getElementById('taxonDetailHeader');
+const taxonDetailRowEl = document.getElementById('taxonDetailRow');
+const taxonDetailActionsEl = document.getElementById('taxonDetailActions');
 
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
@@ -1318,46 +1323,61 @@ function renderTable() {
   const rows = currentTaxa.filter(matchesFilter);
   for (const t of rows) {
     const tr = document.createElement('tr');
-    // Prefer the real photo from an observation in THIS run's own scope — the same one
-    // the Image column and any Commons upload use — over iNaturalist's taxon-wide
-    // "default photo" (picked from any observer, anywhere, unrelated to this project or
-    // user). Showing the taxon-wide photo here while the Image column shows a different,
-    // scope-verified one is confusing at best and, next to "prepare upload", looks like
-    // the wrong photo might be getting uploaded. Only fall back to it, clearly labelled,
-    // when this run found no photo of its own for the taxon at all.
-    const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
-    const photoUrl = usingObsPhoto ? t.obsPhoto.squareUrl : t.photo;
-    const photoTitle = usingObsPhoto
-      ? 'Photo from an observation in this run'
-      : (t.photo ? "iNaturalist's general default photo for this taxon — no photo found on any observation in this run" : '');
-    const photo = photoUrl ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">` : `<div class="thumb"></div>`;
-    const wdLink = t.wikidata
-      ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
-      : '';
-    const wd = !t.wikidata
-      ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
-      : t.wikidataInatIdConflict
-        ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
-        : inatIdLinked(t)
-          ? wdLink
-          : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
-    const gbif = t.wikidata && t.wikidata.gbif
-      ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
-      : '<span class="pill">—</span>';
-    const commons = t.wikidata && t.wikidata.commonsCat
-      ? `<a href="https://commons.wikimedia.org/wiki/Category:${encodeURIComponent(t.wikidata.commonsCat)}" target="_blank" rel="noopener">category</a>`
-      : '<span class="pill">—</span>';
-    const plazi = t.plaziCount === null
-      ? '<span class="pill" title="Plazi lookup only supports species-rank binomials">n/a</span>'
-      : t.plaziCount > 0
-        ? `<button class="small-btn plazi-btn" data-genus="${encodeURIComponent(t.plaziGenusSpecies.genus)}" data-species="${encodeURIComponent(t.plaziGenusSpecies.species)}">${t.plaziCount} treatment${t.plaziCount === 1 ? '' : 's'}</button>`
-        : '<span class="pill">0</span>';
-    const image = renderImageCell(t);
+    tr.innerHTML = buildTaxonRowCells(t, { linkName: true });
+    tbody.appendChild(tr);
+  }
+}
 
-    tr.innerHTML = `
+// The full set of per-taxon status cells (photo, Wikidata/GBIF/Commons/Wikipedia/Plazi/BHL
+// state and actions) — shared verbatim between each row of the main table and the single,
+// enlarged row at the top of a taxon's dedicated curation page (renderTaxonDetail), so
+// every action button and its handler works identically in both places with no duplicated
+// logic. `linkName`: table rows link the name into the curation page; the curation page
+// itself doesn't need to link to where it already is.
+function buildTaxonRowCells(t, { linkName = false } = {}) {
+  // Prefer the real photo from an observation in THIS run's own scope — the same one
+  // the Image column and any Commons upload use — over iNaturalist's taxon-wide
+  // "default photo" (picked from any observer, anywhere, unrelated to this project or
+  // user). Showing the taxon-wide photo here while the Image column shows a different,
+  // scope-verified one is confusing at best and, next to "prepare upload", looks like
+  // the wrong photo might be getting uploaded. Only fall back to it, clearly labelled,
+  // when this run found no photo of its own for the taxon at all.
+  const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
+  const photoUrl = usingObsPhoto ? t.obsPhoto.squareUrl : t.photo;
+  const photoTitle = usingObsPhoto
+    ? 'Photo from an observation in this run'
+    : (t.photo ? "iNaturalist's general default photo for this taxon — no photo found on any observation in this run" : '');
+  const photo = photoUrl ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">` : `<div class="thumb"></div>`;
+  const wdLink = t.wikidata
+    ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
+    : '';
+  const wd = !t.wikidata
+    ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
+    : t.wikidataInatIdConflict
+      ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
+      : inatIdLinked(t)
+        ? wdLink
+        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
+  const gbif = t.wikidata && t.wikidata.gbif
+    ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
+    : '<span class="pill">—</span>';
+  const commons = t.wikidata && t.wikidata.commonsCat
+    ? `<a href="https://commons.wikimedia.org/wiki/Category:${encodeURIComponent(t.wikidata.commonsCat)}" target="_blank" rel="noopener">category</a>`
+    : '<span class="pill">—</span>';
+  const plazi = t.plaziCount === null
+    ? '<span class="pill" title="Plazi lookup only supports species-rank binomials">n/a</span>'
+    : t.plaziCount > 0
+      ? `<button class="small-btn plazi-btn" data-genus="${encodeURIComponent(t.plaziGenusSpecies.genus)}" data-species="${encodeURIComponent(t.plaziGenusSpecies.species)}">${t.plaziCount} treatment${t.plaziCount === 1 ? '' : 's'}</button>`
+      : '<span class="pill">0</span>';
+  const image = renderImageCell(t);
+  const name = linkName
+    ? `<a class="taxon-name" href="${taxonUrl(t.inatId)}" title="Open this taxon's curation page">${t.name}</a>`
+    : `<span class="taxon-name">${t.name}</span>`;
+
+  return `
       <td>${photo}</td>
       <td>
-        <span class="taxon-name">${t.name}</span>
+        ${name}
         ${t.commonName ? `<span class="taxon-common">${t.commonName}</span>` : ''}
       </td>
       <td>${image}</td>
@@ -1372,11 +1392,127 @@ function renderTable() {
       <td>${plazi}</td>
       <td><button class="small-btn bhl-btn" data-taxon="${encodeURIComponent(t.name)}">look up</button></td>
     `;
-    tbody.appendChild(tr);
+}
+
+// ---------- Taxon curation page ----------
+// A dedicated, focused view for one taxon — everything this tool can do for it, in one
+// place, with the Wikidata and Wikipedia actions already expanded (not click-to-reveal
+// like the table, where that same clutter-avoidance would defeat the point of a page
+// whose entire job is showing you everything there is to do). Reachable by clicking a
+// taxon's name in the table (#taxon=<inatId>) — bookmarkable/shareable since it's a real
+// URL hash, though resolving it still requires this run's own currentTaxa (no backend to
+// look a bare taxon id up against without first loading a project or user).
+
+function taxonUrl(inatId) { return `#taxon=${inatId}`; }
+
+async function renderTaxonDetail(t) {
+  statsEl.hidden = true;
+  filtersEl.hidden = true;
+  bulkActionsEl.hidden = true;
+  tableWrapEl.hidden = true;
+  taxonDetailEl.hidden = false;
+
+  taxonDetailRowEl.innerHTML = buildTaxonRowCells(t, { linkName: false });
+
+  let ctx = null;
+  try { ctx = await ensureStubContext(t); } catch (e) { /* header/actions degrade gracefully without it */ }
+  const ancestry = ctx ? RANK_ORDER.map(r => ctx.ranks[r]).filter(Boolean).join(' › ') : '';
+  const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
+  const photoUrl = (usingObsPhoto && t.obsPhoto.originalUrl) || t.photo;
+
+  taxonDetailHeaderEl.innerHTML = `
+    ${photoUrl ? `<img class="taxon-detail-photo" src="${photoUrl}" alt="">` : ''}
+    <div>
+      <h2><span class="taxon-name">${t.name}</span>${t.commonName ? ` <span class="taxon-common-inline">${t.commonName}</span>` : ''}</h2>
+      ${ancestry ? `<p class="taxon-detail-ancestry">${ancestry}</p>` : ''}
+      <p><a href="${inatTaxonUrl(t)}" target="_blank" rel="noopener">${t.rank || 'taxon'} on iNaturalist</a> — ${t.obsCount} observation${t.obsCount === 1 ? '' : 's'} in this run</p>
+    </div>
+  `;
+
+  const panels = [];
+
+  // Wikidata: whichever single action applies, built and shown immediately instead of
+  // waiting for the same click this taxon's table row would need.
+  if (!t.wikidata) {
+    try {
+      const commands = await buildQuickStatements(t);
+      panels.push(taxonActionPanel('Wikidata — not found',
+        `<em>${t.name}</em> has no Wikidata item. Proposed QuickStatements to create one, assembled from iNaturalist (rank, ancestor chain, taxon id), GBIF and NCBI Taxonomy — review before running, this is a draft.`,
+        commands, { showQsLink: true }));
+    } catch (e) {
+      panels.push(taxonActionPanel('Wikidata — not found', `Could not build QuickStatements: ${e.message}`, ''));
+    }
+  } else if (t.wikidataInatIdConflict) {
+    panels.push(taxonActionPanel(`Wikidata — ${t.wikidataInatIdConflict.length} iNat IDs on ${t.wikidata.qid}`,
+      inatIdConflictDetail(t), ''));
+  } else if (!inatIdLinked(t)) {
+    panels.push(taxonActionPanel(`Wikidata — ${t.wikidata.qid} missing its iNat ID`,
+      `This item exists but has no <code>P3151</code> statement pointing back at iNaturalist taxon ${t.inatId}. Proposed QuickStatements to add just that:`,
+      buildInatIdLinkQS(t), { showQsLink: true }));
+  }
+
+  // Wikipedia: one auto-drafted stub per still-missing language, all at once.
+  for (const l of LANGS) {
+    if (t.wikidata && t.wikipedia && t.wikipedia[l.code]) continue; // already has an article
+    if (!t.wikidata) continue; // no Wikidata item yet — nothing to link a new article to
+    try {
+      const wikitext = await buildStub(t, l.code);
+      panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`,
+        `Draft ${l.code} stub for <em>${t.name}</em>, similar to <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>. Review before publishing.` +
+        ` <a class="small-btn" href="${editUrl(l.code, t.name)}" target="_blank" rel="noopener">Open ${l.code}.wikipedia.org editor ↗</a>`,
+        wikitext));
+    } catch (e) {
+      panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`, `Could not draft a stub: ${e.message}`, ''));
+    }
+  }
+
+  taxonDetailActionsEl.innerHTML = panels.length
+    ? panels.join('')
+    : '<p class="identity-note">Nothing outstanding — Wikidata is linked with a matching iNaturalist id, and every tracked language already has an article.</p>';
+}
+
+let taxonActionPanelSeq = 0;
+// showQsLink: only Wikidata-action panels (QuickStatements content) need the
+// "Open QuickStatements" link — a Wikipedia stub's textarea holds wikitext, not
+// QuickStatements, and already carries its own "Open X.wikipedia.org editor" link in
+// bodyHtml, so showing a QuickStatements link next to it would be actively wrong.
+function taxonActionPanel(title, bodyHtml, textareaContent, { showQsLink = false } = {}) {
+  const id = `taxon-action-${taxonActionPanelSeq++}`;
+  return `<div class="identity-panel taxon-action-panel">
+    <h3>${title}</h3>
+    <div>${bodyHtml}</div>
+    ${textareaContent ? `
+      <div class="stub-toolbar">
+        <button class="small-btn copy-stub-btn" data-target="${id}">Copy</button>
+        ${showQsLink ? '<a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>' : ''}
+      </div>
+      <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${textareaContent}</textarea>
+    ` : ''}
+  </div>`;
+}
+
+function showTableView() {
+  taxonDetailEl.hidden = true;
+  if (currentTaxa.length) {
+    statsEl.hidden = false;
+    filtersEl.hidden = false;
+    tableWrapEl.hidden = false;
+    updateStats(); // re-derives the bulk-action button's visibility too
   }
 }
 
-tbody.addEventListener('click', async (e) => {
+function syncViewFromHash() {
+  const m = location.hash.match(/^#taxon=(\d+)$/);
+  if (!m) { showTableView(); return; }
+  const t = currentTaxa.find(x => x.inatId === Number(m[1]));
+  if (!t) { showTableView(); return; } // nothing loaded yet that matches — nothing to show
+  renderTaxonDetail(t);
+}
+
+window.addEventListener('hashchange', syncViewFromHash);
+taxonDetailBackBtn.addEventListener('click', () => { location.hash = ''; });
+
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.bhl-btn');
   if (!btn) return;
   const name = decodeURIComponent(btn.dataset.taxon);
@@ -1414,7 +1550,7 @@ tbody.addEventListener('click', async (e) => {
   }
 });
 
-tbody.addEventListener('click', async (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.plazi-btn');
   if (!btn) return;
   const genus = decodeURIComponent(btn.dataset.genus);
@@ -1475,7 +1611,7 @@ function inatIdConflictDetail(t) {
     ${guidance}`;
 }
 
-tbody.addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
   const btn = e.target.closest('.inatconflict-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -1494,7 +1630,7 @@ tbody.addEventListener('click', (e) => {
   row.after(detailRow);
 });
 
-tbody.addEventListener('click', async (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.stub-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -1539,7 +1675,7 @@ tbody.addEventListener('click', async (e) => {
   }
 });
 
-tbody.addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
   const btn = e.target.closest('.commons-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -1591,7 +1727,7 @@ tbody.addEventListener('click', (e) => {
   });
 });
 
-tbody.addEventListener('click', async (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.qs-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -1638,7 +1774,7 @@ tbody.addEventListener('click', async (e) => {
   }
 });
 
-tbody.addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
   const btn = e.target.closest('.inatlink-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -1668,7 +1804,7 @@ tbody.addEventListener('click', (e) => {
   row.after(box);
 });
 
-tbody.addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
   const btn = e.target.closest('.copy-stub-btn');
   if (!btn) return;
   const ta = document.getElementById(btn.dataset.target);
@@ -1874,8 +2010,10 @@ async function run() {
   identityPanelEl.hidden = true;
   bulkActionsEl.hidden = true;
   bulkInatIdBox.hidden = true;
+  taxonDetailEl.hidden = true;
   identityState = null;
   currentTaxa = [];
+  if (location.hash) location.hash = ''; // a fresh search always starts on the table, not a stale taxon page
 
   // Independent of the taxa pipeline below (it's about the scope itself, not the
   // species observed in it), so it runs concurrently rather than blocking on it.
