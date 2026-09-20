@@ -158,6 +158,39 @@ button:disabled { opacity: 0.5; cursor: default; }
   margin: 8px 0 0;
 }
 
+.taxon-detail { margin: 20px 0; }
+
+.taxon-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  margin: 14px 0 20px;
+}
+
+.taxon-detail-photo {
+  width: 140px;
+  height: 140px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--border);
+}
+
+.taxon-detail-header h2 { margin: 0 0 4px; font-size: 1.3rem; }
+.taxon-common-inline { font-style: normal; font-weight: 400; color: var(--text-dim); font-size: 0.9rem; }
+.taxon-detail-ancestry { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 6px; }
+
+.taxon-detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 20px;
+}
+
+.taxon-action-panel { margin: 0; }
+.taxon-action-panel h3 { margin: 0 0 6px; font-size: 0.95rem; }
+
 .log-header {
   font-weight: 600;
   margin-bottom: 2px;
@@ -268,6 +301,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); 
 
 .taxon-name { font-style: italic; font-weight: 600; }
 .taxon-common { display: block; font-style: normal; font-weight: 400; color: var(--text-dim); font-size: 0.8rem; white-space: normal; }
+a.taxon-name { color: var(--text); text-decoration: none; }
+a.taxon-name:hover { color: var(--link); text-decoration: underline; }
 
 .badge {
   display: inline-flex; align-items: center; justify-content: center;
