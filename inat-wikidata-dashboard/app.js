@@ -65,7 +65,7 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', sil
       lastErr = e;
       // Always logged, even when silent: a failed/retried batch is exactly the kind of
       // thing the aggregate summary line (logged by the caller) would otherwise hide.
-      log(`${label || endpoint} — attempt ${attempt + 1} failed: ${e.message}`, true);
+      log(`${label || endpoint} — attempt ${attempt + 1} failed: ${e.message}`, 'warn');
       if (attempt < retries) {
         // A 429 means "you're going too fast", not "try again in a moment" — backing off
         // on the same short schedule as a generic timeout just trips it again on the next
@@ -260,7 +260,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
         return rows.length;
       }, WDQS_BATCH_SIZE);
     } catch (e) {
-      log(`WDQS re-check failed (${e.message}) — keeping QLever's ${unmatched.length} unmatched as-is`, true);
+      log(`WDQS re-check failed (${e.message}) — keeping QLever's ${unmatched.length} unmatched as-is`, 'warn');
     }
   }
 
@@ -354,7 +354,7 @@ async function resolveSitelinks(taxa) {
         return rows.length;
       }, WDQS_BATCH_SIZE);
     } catch (e) {
-      log(`WDQS re-check failed (${e.message}) — keeping QLever's answer for ${toRecheck.length} taxa as-is`, true);
+      log(`WDQS re-check failed (${e.message}) — keeping QLever's answer for ${toRecheck.length} taxa as-is`, 'warn');
     }
   }
 
@@ -597,7 +597,7 @@ async function ensureStubContext(t) {
 
   let gbif = null;
   if (t.wikidata && t.wikidata.gbif) {
-    try { gbif = await fetchGbifSpecies(t.wikidata.gbif); } catch (e) { log(`GBIF lookup failed: ${e.message}`, true); }
+    try { gbif = await fetchGbifSpecies(t.wikidata.gbif); } catch (e) { log(`GBIF lookup failed: ${e.message}`, 'warn'); }
   }
 
   t._stubContext = { detail, ranks, parent, gbif };
@@ -806,7 +806,7 @@ async function sparqlFirstRowWithFallback(query, label) {
   try {
     return await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true, retries: 1 });
   } catch (e) {
-    log(`WDQS re-check failed for "${label}" (${e.message}) — trusting QLever's empty result`, true);
+    log(`WDQS re-check failed for "${label}" (${e.message}) — trusting QLever's empty result`, 'warn');
     return [];
   }
 }
@@ -1209,9 +1209,15 @@ function sanitizeLogMessage(msg) {
   return collapsed.length > MAX ? collapsed.slice(0, MAX) + '… (truncated)' : collapsed;
 }
 
-function log(msg, isErr) {
+// level: 'err' (red) for something that actually broke — the run aborted, a whole step
+// gave up with no usable result. 'warn' (amber) for adversity the tool already handled —
+// a retry attempt, a fallback endpoint kicking in, a single lookup degrading gracefully.
+// Both used to render identically in red, which made ordinary "WDQS is slow today, fell
+// back to QLever" noise look exactly like something was broken.
+function log(msg, level) {
   const line = document.createElement('div');
-  line.className = 'log-line' + (isErr ? ' err' : '');
+  const cls = level === true || level === 'err' ? 'err' : level === 'warn' ? 'warn' : '';
+  line.className = 'log-line' + (cls ? ' ' + cls : '');
   line.textContent = sanitizeLogMessage(msg);
   statusLogEl.appendChild(line);
   statusLogEl.scrollTop = statusLogEl.scrollHeight;
@@ -1834,7 +1840,7 @@ async function run() {
     renderTable();
   } catch (err) {
     setStatusHeader(`Error: ${err.message}`);
-    log(err.stack || '', true);
+    log(err.stack || '', 'err');
   } finally {
     runBtn.disabled = false;
     statusSpinnerEl.hidden = true;
