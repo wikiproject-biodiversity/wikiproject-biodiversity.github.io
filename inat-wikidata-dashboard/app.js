@@ -881,6 +881,13 @@ async function ensureQuickStatementsContext(t) {
   return t._qsContext;
 }
 
+// A taxon whose scientific name already matched an existing Wikidata item, but that
+// item has no P3151 back to this iNaturalist taxon — a single-statement add, not a
+// full CREATE draft, so it needs none of buildQuickStatements()'s lineage lookups.
+function buildInatIdLinkQS(t) {
+  return `${t.wikidata.qid}\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`;
+}
+
 async function buildQuickStatements(t) {
   const ctx = await ensureQuickStatementsContext(t);
   const rankQid = ctx.rankQids.get((t.rank || '').toLowerCase());
@@ -1156,9 +1163,16 @@ function taxonMissingCount(t) {
   return LANGS.filter(l => !t.wikipedia[l.code]).length;
 }
 
+// True once the Wikidata item matched by scientific name also carries THIS taxon's
+// iNaturalist id as P3151 — a name match alone doesn't mean the two are cross-linked.
+function inatIdLinked(t) {
+  return !!(t.wikidata && t.wikidata.inat != null && String(t.wikidata.inat) === String(t.inatId));
+}
+
 function matchesFilter(t) {
   if (currentFilter === 'all') return true;
   if (currentFilter === 'unresolved') return !t.wikidata;
+  if (currentFilter === 'inat-id-missing') return !!t.wikidata && !inatIdLinked(t);
   const missing = taxonMissingCount(t);
   if (missing === null) return false;
   if (currentFilter === 'missing-any') return missing > 0;
@@ -1199,9 +1213,14 @@ function renderTable() {
   for (const t of rows) {
     const tr = document.createElement('tr');
     const photo = t.photo ? `<img class="thumb" src="${t.photo}" alt="">` : `<div class="thumb"></div>`;
-    const wd = t.wikidata
+    const wdLink = t.wikidata
       ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
-      : `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`;
+      : '';
+    const wd = !t.wikidata
+      ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
+      : inatIdLinked(t)
+        ? wdLink
+        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
     const gbif = t.wikidata && t.wikidata.gbif
       ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
       : '<span class="pill">—</span>';
@@ -1458,6 +1477,36 @@ tbody.addEventListener('click', async (e) => {
 });
 
 tbody.addEventListener('click', (e) => {
+  const btn = e.target.closest('.inatlink-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t || !t.wikidata) return;
+
+  const row = btn.closest('tr');
+  const qsRow = row.nextElementSibling;
+  if (qsRow && qsRow.classList.contains('qs-row')) {
+    qsRow.remove();
+    return;
+  }
+
+  const commands = buildInatIdLinkQS(t);
+  const rowId = `inatlink-${inatId}-${Date.now()}`;
+  const box = document.createElement('tr');
+  box.className = 'bhl-row qs-row';
+  box.innerHTML = `<td></td><td colspan="11">
+    Proposed QuickStatements to add the iNaturalist taxon id to the existing item
+    <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a> for <em>${t.name}</em>.
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+  </td>`;
+  row.after(box);
+});
+
+tbody.addEventListener('click', (e) => {
   const btn = e.target.closest('.copy-stub-btn');
   if (!btn) return;
   const ta = document.getElementById(btn.dataset.target);
@@ -1599,10 +1648,12 @@ function updateStats() {
   const resolved = currentTaxa.filter(t => t.wikidata).length;
   const missingAny = currentTaxa.filter(t => taxonMissingCount(t) > 0).length;
   const missingAll = currentTaxa.filter(t => taxonMissingCount(t) === LANGS.length).length;
+  const inatIdMissing = currentTaxa.filter(t => t.wikidata && !inatIdLinked(t)).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
   document.getElementById('statMissingAny').textContent = missingAny;
   document.getElementById('statMissingAll').textContent = missingAll;
+  document.getElementById('statInatIdMissing').textContent = inatIdMissing;
   statsEl.hidden = false;
 }
 
