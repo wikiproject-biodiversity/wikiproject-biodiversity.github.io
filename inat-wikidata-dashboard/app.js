@@ -600,9 +600,12 @@ async function fetchGbifSpecies(gbifId) {
   return res.json();
 }
 
-// Loads (and caches on the taxon object) the extra data needed to draft a stub:
-// the iNaturalist ancestor chain (for rank hierarchy + parent taxon) and, if a
-// GBIF id is known, the GBIF species record (for authorship / publication ref).
+// Loads (and caches on the taxon object) the extra data needed to draft a stub: the
+// iNaturalist ancestor chain (for rank hierarchy + parent taxon) and, independently, a
+// GBIF classification and an NCBI Taxonomy classification — three lineages from three
+// databases that don't share a single source of truth, so where they land the same
+// taxon in a different family/order/etc is exactly the kind of thing worth a stub's own
+// "Taxonomy" section flagging rather than silently picking one (see taxonomyComparison).
 async function ensureStubContext(t) {
   if (t._stubContext) return t._stubContext;
   const detail = await fetchINatTaxonDetail(t.inatId);
@@ -618,10 +621,50 @@ async function ensureStubContext(t) {
   let gbif = null;
   if (t.wikidata && t.wikidata.gbif) {
     try { gbif = await fetchGbifSpecies(t.wikidata.gbif); } catch (e) { log(`GBIF lookup failed: ${e.message}`, 'warn'); }
+  } else {
+    // No P846 on Wikidata to look up directly — fall back to GBIF's own name match,
+    // same as the QuickStatements context does, so the taxonomy comparison isn't limited
+    // to taxa that already happen to be cross-referenced on Wikidata.
+    try {
+      const match = await fetchGbifMatch(t.name);
+      if (match && match.matchType && match.matchType !== 'NONE') gbif = match;
+    } catch (e) { log(`GBIF match failed: ${e.message}`, 'warn'); }
   }
 
-  t._stubContext = { detail, ranks, parent, gbif };
+  let ncbiRanks = {};
+  try {
+    const ncbiTaxonId = await fetchNcbiTaxonId(t.name);
+    if (ncbiTaxonId) ncbiRanks = await fetchNcbiLineage(ncbiTaxonId);
+  } catch (e) { log(`NCBI Taxonomy lookup failed: ${e.message}`, 'warn'); }
+
+  t._stubContext = { detail, ranks, parent, gbif, ncbiRanks };
   return t._stubContext;
+}
+
+const TAXONOMY_COMPARE_RANKS = ['kingdom', 'phylum', 'class', 'order', 'family', 'genus'];
+
+// Cross-checks the classification (kingdom..genus) as reported independently by
+// iNaturalist, GBIF and NCBI Taxonomy. Ranks only ONE source has an opinion on aren't a
+// disagreement — there's nothing to compare — only ranks where two-plus sources both
+// have a value AND that value differs count. Returns which sources actually contributed
+// anything (an absent GBIF/NCBI match is common and not itself worth mentioning) and the
+// list of ranks that disagree, each with which source said what.
+function compareTaxonomySources(ctx) {
+  const gbifRanks = {};
+  if (ctx.gbif) for (const r of TAXONOMY_COMPARE_RANKS) if (ctx.gbif[r]) gbifRanks[r] = ctx.gbif[r];
+  const sources = [
+    ['iNaturalist', ctx.ranks],
+    ['GBIF', gbifRanks],
+    ['NCBI Taxonomy', ctx.ncbiRanks || {}],
+  ].filter(([, r]) => Object.keys(r).length > 0);
+
+  const disagreements = [];
+  for (const rank of TAXONOMY_COMPARE_RANKS) {
+    const values = {};
+    for (const [name, r] of sources) if (r[rank]) values[name] = r[rank];
+    if (new Set(Object.values(values)).size > 1) disagreements.push({ rank, values });
+  }
+  return { sourceNames: sources.map(([name]) => name), disagreements };
 }
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
@@ -633,7 +676,94 @@ function commonsImageFilename(t) {
   return pageUrl ? decodeURIComponent(pageUrl.split('File:').pop()) : '';
 }
 
-function buildStubEn(t, ctx) {
+// iNaturalist is user-generated/crowdsourced content and isn't a reliable source under
+// Wikipedia's sourcing policy — it should never be the <ref> "proving" a factual claim,
+// only ever the target of an external database link (which {{Taxonbar}}, sourced from
+// Wikidata, already covers). So the lead sentence gets a {{citation needed}} marker
+// until a curator supplies something actually citable — on the taxon curation page, by
+// picking a BHL literature record (see the BHL reference picker there) — at which point
+// `citation` is a real {title, containerTitle, date, url} to cite instead.
+const CITATION_NEEDED = { en: '{{citation needed}}', es: '{{cita requerida}}', ja: '{{要出典}}', pt: '{{carece de fontes}}' };
+
+function leadCitationWikitext(lang, citation) {
+  if (!citation) return CITATION_NEEDED[lang] || CITATION_NEEDED.en;
+  const accessDate = todayISO();
+  if (lang === 'es') {
+    return `<ref>{{cita web |título=${citation.title}${citation.containerTitle ? ` |sitioweb=${citation.containerTitle}` : ''}${citation.date ? ` |fecha=${citation.date}` : ''} |url=${citation.url} |fechaacceso=${accessDate}}}</ref>`;
+  }
+  if (lang === 'ja') {
+    return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''} |url=${citation.url} |accessdate=${accessDate}}}</ref>`;
+  }
+  if (lang === 'pt') {
+    return `<ref>{{citar web |título=${citation.title}${citation.containerTitle ? ` |site=${citation.containerTitle}` : ''}${citation.date ? ` |data=${citation.date}` : ''} |url=${citation.url} |acessodata=${accessDate}}}</ref>`;
+  }
+  return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''} |url=${citation.url} |access-date=${accessDate}}}</ref>`;
+}
+
+// Per-language phrasing for the taxonomy cross-check section — kept as small a set of
+// building blocks as the four templates elsewhere in this file use, rather than four
+// fully separate prose generators.
+const TAXONOMY_I18N = {
+  en: {
+    heading: '==Taxonomy==',
+    ranks: { kingdom: 'Kingdom', phylum: 'Phylum', class: 'Class', order: 'Order', family: 'Family', genus: 'Genus' },
+    follows: (list) => `Classification follows ${list}.`,
+    disagree: "These sources don't fully agree on the classification — verify before publishing:",
+    placesIn: (src, val) => `${src} places it in ''${val}''`,
+  },
+  es: {
+    heading: '==Taxonomía==',
+    ranks: { kingdom: 'Reino', phylum: 'Filo', class: 'Clase', order: 'Orden', family: 'Familia', genus: 'Género' },
+    follows: (list) => `La clasificación sigue a ${list}.`,
+    disagree: 'Estas fuentes no coinciden del todo en la clasificación — verificar antes de publicar:',
+    placesIn: (src, val) => `${src} la ubica en ''${val}''`,
+  },
+  ja: {
+    heading: '==分類==',
+    ranks: { kingdom: '界', phylum: '門', class: '綱', order: '目', family: '科', genus: '属' },
+    follows: (list) => `分類は${list}に基づく。`,
+    disagree: '出典間で分類の一部が一致していない — 公開前に確認が必要:',
+    placesIn: (src, val) => `${src}では${val}`,
+  },
+  pt: {
+    heading: '==Taxonomia==',
+    ranks: { kingdom: 'Reino', phylum: 'Filo', class: 'Classe', order: 'Ordem', family: 'Família', genus: 'Gênero' },
+    follows: (list) => `A classificação segue ${list}.`,
+    disagree: 'Estas fontes não concordam totalmente na classificação — verificar antes de publicar:',
+    placesIn: (src, val) => `${src} a coloca em ''${val}''`,
+  },
+};
+
+// A "==Taxonomy==" section built from whichever of iNaturalist/GBIF/NCBI Taxonomy this
+// taxon actually matched in (a missing GBIF or NCBI match is common and silently
+// skipped, not itself worth a note), listing the classification and — the actually
+// useful part — calling out any rank where the sources land the taxon differently
+// instead of quietly picking one, since that disagreement is real information a curator
+// needs to see before publishing.
+function taxonomyWikitext(ctx, lang) {
+  const i18n = TAXONOMY_I18N[lang] || TAXONOMY_I18N.en;
+  const { sourceNames, disagreements } = compareTaxonomySources(ctx);
+  if (!sourceNames.length) return '';
+  const gbifRanks = ctx.gbif || {};
+  const lines = TAXONOMY_COMPARE_RANKS
+    .map(rank => {
+      const value = ctx.ranks[rank] || gbifRanks[rank] || (ctx.ncbiRanks && ctx.ncbiRanks[rank]);
+      return value ? `* ${i18n.ranks[rank]}: ${value}` : null;
+    })
+    .filter(Boolean)
+    .join('\n');
+  if (!lines) return '';
+  let disagreeBlock = '';
+  if (disagreements.length) {
+    const items = disagreements
+      .map(d => `* ${i18n.ranks[d.rank]}: ` + Object.entries(d.values).map(([src, v]) => i18n.placesIn(src, v)).join('; '))
+      .join('\n');
+    disagreeBlock = `\n\n${i18n.disagree}\n${items}`;
+  }
+  return `\n\n${i18n.heading}\n${i18n.follows(sourceNames.join(', '))}\n${lines}${disagreeBlock}`;
+}
+
+function buildStubEn(t, ctx, citation) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || (ranks.species ? '' : '');
   const publishedInRef = gbif && gbif.publishedIn ? `<ref>${gbif.publishedIn}</ref>` : '';
@@ -651,7 +781,7 @@ function buildStubEn(t, ctx) {
 | authority = ${authority}
 }}
 
-${exordium} is a [[${t.rank}]] from the [[${parent ? parent.rank : ''}]] ''[[${parentName}]]''. ${publishedInRef}<ref name="inaturalist-${t.name.replace(/\s+/g, '-')}">{{cite web |title=${t.name} |url=${inatTaxonUrl(t)} |website=iNaturalist |access-date=${todayISO()} |language=en}}</ref>
+${exordium} is a [[${t.rank}]] from the [[${parent ? parent.rank : ''}]] ''[[${parentName}]]''. ${publishedInRef}${leadCitationWikitext('en', citation)}${taxonomyWikitext(ctx, 'en')}
 
 ==References==
 {{Reflist}}
@@ -660,7 +790,7 @@ ${commonsBlock}${taxonbar}
 <!-- DRAFT generated from iNaturalist + GBIF + Wikidata data — review before publishing. -->`;
 }
 
-function buildStubEs(t, ctx) {
+function buildStubEs(t, ctx, citation) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || '';
   const fichaFields = [
@@ -681,7 +811,7 @@ function buildStubEs(t, ctx) {
 ${fichaFields}
 }}
 
-'''''${t.name}'''''${t.commonName ? ` es el nombre científico de '''${t.commonName}'''` : ''}, una especie de ${t.rank} perteneciente a ${parent ? parent.name : (ranks.family || '')}.<ref>{{cita web |título=${t.name} |url=${inatTaxonUrl(t)} |sitioweb=iNaturalist |fechaacceso=${todayISO()} |idioma=en}}</ref>
+'''''${t.name}'''''${t.commonName ? ` es el nombre científico de '''${t.commonName}'''` : ''}, una especie de ${t.rank} perteneciente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('es', citation)}${taxonomyWikitext(ctx, 'es')}
 
 == Referencias ==
 {{listaref}}
@@ -689,7 +819,7 @@ ${taxonbar}
 <!-- BORRADOR generado a partir de datos de iNaturalist, GBIF y Wikidata — revisar antes de publicar. Verifica la plantilla de esbozo adecuada. -->`;
 }
 
-function buildStubJa(t, ctx) {
+function buildStubJa(t, ctx, citation) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || '';
   const bunruiFields = [
@@ -711,7 +841,7 @@ function buildStubJa(t, ctx) {
 ${bunruiFields}
 }}
 
-'''${t.name}'''${t.commonName ? `（${t.commonName}）` : ''}は、${parent ? parent.name : (ranks.family || '')}に属する${t.rank}の一種である。<ref>{{cite web |title=${t.name} |url=${inatTaxonUrl(t)} |website=iNaturalist |accessdate=${todayISO()} |language=en}}</ref>
+'''${t.name}'''${t.commonName ? `（${t.commonName}）` : ''}は、${parent ? parent.name : (ranks.family || '')}に属する${t.rank}の一種である。${leadCitationWikitext('ja', citation)}${taxonomyWikitext(ctx, 'ja')}
 
 == 脚注 ==
 {{Reflist}}
@@ -719,7 +849,7 @@ ${taxonbar}
 <!-- iNaturalist・GBIF・Wikidataのデータから自動生成した下書きです。公開前に内容と適切なスタブテンプレートを確認してください。 -->`;
 }
 
-function buildStubPt(t, ctx) {
+function buildStubPt(t, ctx, citation) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || '';
   const infoFields = [
@@ -741,7 +871,7 @@ function buildStubPt(t, ctx) {
 ${infoFields}
 }}
 
-'''''${t.name}'''''${t.commonName ? `, conhecida popularmente como '''${t.commonName}'''` : ''} é uma espécie de ${t.rank} pertencente a ${parent ? parent.name : (ranks.family || '')}.<ref>{{citar web |título=${t.name} |url=${inatTaxonUrl(t)} |site=iNaturalist |acessodata=${todayISO()} |idioma=en}}</ref>
+'''''${t.name}'''''${t.commonName ? `, conhecida popularmente como '''${t.commonName}'''` : ''} é uma espécie de ${t.rank} pertencente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('pt', citation)}${taxonomyWikitext(ctx, 'pt')}
 
 == Referências ==
 {{reflist}}
@@ -750,12 +880,15 @@ ${taxonbar}
 <!-- RASCUNHO gerado a partir de dados do iNaturalist, GBIF e Wikidata — revise antes de publicar. Verifique se o modelo de esboço é o mais adequado. -->`;
 }
 
-async function buildStub(t, lang) {
+// citation: optional {title, containerTitle, date, url} — a genuinely citable source
+// (e.g. a BHL literature record picked on the taxon curation page) to reference the lead
+// sentence with, instead of leaving it a {{citation needed}} marker.
+async function buildStub(t, lang, citation) {
   const ctx = await ensureStubContext(t);
-  if (lang === 'en') return buildStubEn(t, ctx);
-  if (lang === 'es') return buildStubEs(t, ctx);
-  if (lang === 'ja') return buildStubJa(t, ctx);
-  if (lang === 'pt') return buildStubPt(t, ctx);
+  if (lang === 'en') return buildStubEn(t, ctx, citation);
+  if (lang === 'es') return buildStubEs(t, ctx, citation);
+  if (lang === 'ja') return buildStubJa(t, ctx, citation);
+  if (lang === 'pt') return buildStubPt(t, ctx, citation);
   throw new Error(`No stub template for language "${lang}"`);
 }
 
@@ -811,6 +944,27 @@ async function fetchNcbiTaxonId(name) {
   const json = await res.json();
   const ids = (json.esearchresult && json.esearchresult.idlist) || [];
   return ids.length === 1 ? ids[0] : null;
+}
+
+// NCBI's esummary returns the full ancestor chain (`lineageex`, one {taxid,
+// scientificname, rank} per node) for a taxon id — this is what lets the drafted stub's
+// taxonomy section cross-check iNaturalist and GBIF against a third, independent source
+// rather than just repeating whichever one the infobox already came from.
+async function fetchNcbiLineage(taxid) {
+  const res = await fetch(
+    `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=taxonomy&id=${encodeURIComponent(taxid)}&retmode=json`,
+    { headers: { Accept: 'application/json' } }
+  );
+  if (!res.ok) throw new Error(`NCBI esummary HTTP ${res.status}`);
+  const json = await res.json();
+  const rec = json.result && json.result[String(taxid)];
+  const lineage = (rec && rec.lineageex) || [];
+  const ranks = {};
+  for (const node of lineage) {
+    const rank = (node.rank || '').toLowerCase();
+    if (RANK_ORDER.includes(rank)) ranks[rank] = node.scientificname;
+  }
+  return ranks;
 }
 
 // Every single-row "does X already exist on Wikidata" lookup in this tool goes through
@@ -1451,16 +1605,20 @@ async function renderTaxonDetail(t) {
       buildInatIdLinkQS(t), { showQsLink: true }));
   }
 
-  // Wikipedia: one auto-drafted stub per still-missing language, all at once.
+  // Wikipedia: one auto-drafted stub per still-missing language, all at once. Each
+  // stub's lead sentence starts with no citation ({{citation needed}}) — iNaturalist
+  // itself isn't a reliable source to cite — so fetch this taxon's BHL literature once,
+  // up front, and let the picker on each language panel swap in a real one.
+  const needsWikipedia = LANGS.some(l => t.wikidata && (!t.wikipedia || !t.wikipedia[l.code]));
+  if (needsWikipedia) {
+    try { t._bhlResults = await fetchBHL(t.name); } catch (e) { t._bhlResults = []; }
+  }
   for (const l of LANGS) {
     if (t.wikidata && t.wikipedia && t.wikipedia[l.code]) continue; // already has an article
     if (!t.wikidata) continue; // no Wikidata item yet — nothing to link a new article to
     try {
       const wikitext = await buildStub(t, l.code);
-      panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`,
-        `Draft ${l.code} stub for <em>${t.name}</em>, similar to <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>. Review before publishing.` +
-        ` <a class="small-btn" href="${editUrl(l.code, t.name)}" target="_blank" rel="noopener">Open ${l.code}.wikipedia.org editor ↗</a>`,
-        wikitext));
+      panels.push(wikipediaStubPanel(t, l.code, wikitext));
     } catch (e) {
       panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`, `Could not draft a stub: ${e.message}`, ''));
     }
@@ -1490,6 +1648,66 @@ function taxonActionPanel(title, bodyHtml, textareaContent, { showQsLink = false
     ` : ''}
   </div>`;
 }
+
+// BHL titles come from a live SPARQL graph, not something this app controls the shape
+// of — escape before dropping one into an <option>'s markup rather than its text.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// A Wikipedia stub panel gets its own renderer (rather than going through
+// taxonActionPanel) because it needs a live control the generic panel doesn't: a picker
+// for which BHL literature record — if any — to cite the lead sentence with, since
+// iNaturalist itself can't be. `t._bhlResults` is populated once per taxon (shared by
+// every language's panel) by renderTaxonDetail before this is called.
+function wikipediaStubPanel(t, lang, wikitext) {
+  const id = `taxon-action-${taxonActionPanelSeq++}`;
+  const bhlResults = t._bhlResults || [];
+  const options = ['<option value="">No citation ({{citation needed}})</option>']
+    .concat(bhlResults.map((r, i) =>
+      `<option value="${i}">${escapeHtml((r.title || '(untitled)').slice(0, 70))}${r.date ? ` (${escapeHtml(r.date)})` : ''}</option>`
+    ));
+  const bhlNote = bhlResults.length
+    ? ''
+    : '<p class="identity-note">No BHL literature found for this taxon — the lead sentence stays marked {{citation needed}} until you search for and add a source manually.</p>';
+  return `<div class="identity-panel taxon-action-panel">
+    <h3>Wikipedia (${lang}) — no article</h3>
+    <div>
+      Draft ${lang} stub for <em>${t.name}</em>, similar to
+      <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>.
+      Review before publishing.
+      <a class="small-btn" href="${editUrl(lang, t.name)}" target="_blank" rel="noopener">Open ${lang}.wikipedia.org editor ↗</a>
+    </div>
+    <div class="stub-toolbar">
+      <label class="bhl-citation-label">Cite lead sentence from BHL:
+        <select class="bhl-citation-select" data-inat-id="${t.inatId}" data-lang="${lang}" data-target="${id}">
+          ${options.join('')}
+        </select>
+      </label>
+      <button class="small-btn copy-stub-btn" data-target="${id}">Copy</button>
+    </div>
+    ${bhlNote}
+    <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
+  </div>`;
+}
+
+document.addEventListener('change', async (e) => {
+  const select = e.target.closest('.bhl-citation-select');
+  if (!select) return;
+  const t = currentTaxa.find(x => x.inatId === Number(select.dataset.inatId));
+  const textarea = document.getElementById(select.dataset.target);
+  if (!t || !textarea) return;
+  const chosen = select.value === '' ? null : (t._bhlResults || [])[Number(select.value)];
+  const citation = chosen ? { title: chosen.title, containerTitle: chosen.containerTitle, date: chosen.date, url: chosen.part } : null;
+  select.disabled = true;
+  try {
+    textarea.value = await buildStub(t, select.dataset.lang, citation);
+  } catch (err) {
+    log(`Could not rebuild stub with the chosen citation: ${err.message}`, 'warn');
+  } finally {
+    select.disabled = false;
+  }
+});
 
 function showTableView() {
   taxonDetailEl.hidden = true;
