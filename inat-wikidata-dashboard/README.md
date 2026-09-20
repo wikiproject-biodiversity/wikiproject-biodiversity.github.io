@@ -118,7 +118,36 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
      covers the legitimate "here's the iNaturalist record" cross-reference. On the
      per-taxon curation page (item 11 below), a picker lets you swap in a real citation
      from this taxon's BHL literature instead (`leadCitationWikitext()`,
-     `wikipediaStubPanel()`).
+     `wikipediaStubPanel()`) — or paste your own URL or DOI directly. For a DOI, the item's
+     citation gets built one of two ways: if the publication already has a Wikidata item
+     (checked via `P356`, `fetchWikidataItemByDoi()`), the citation is `{{cite Q|Q...}}` —
+     the actively-maintained successor to `{{cite doi}}` (a bot-maintained-subpage system
+     deprecated around 2016), pulling the citation live from Wikidata's own statements. If
+     not, Crossref's public API (`fetchCrossrefWork()`) fills in title/journal/year from
+     just the DOI, cited with a plain `|doi=` parameter (never `|url=` to a doi.org
+     redirect — that's what `|doi=` is for), and a QuickStatements draft to create the
+     publication's own Wikidata item is offered alongside it (`buildPublicationQS()`) —
+     title, `P356`, year, nothing more; like every other QuickStatements draft here, never
+     run automatically.
+   - **Stub drafting is gated on the Wikidata match actually being trustworthy**
+     (`stubReadiness()`): an ambiguous match, a conflicted or unlinked iNaturalist id on
+     the matched item all disable it — table ✗ badges render as plain, non-clickable spans
+     (not buttons) and the curation page shows why instead of auto-drafting anything.
+     Linking a new article to a Wikidata item this tool isn't confident is the right one
+     would compound the underlying data problem rather than fix anything; each blocker is
+     already surfaced (and fixable) elsewhere — the ambiguous pill, the conflict panel, the
+     "link iNat ID" flow.
+   - **A missing-article verdict isn't taken purely from the exact-P225 match.** Found
+     live: *Bos taurus* — the strict taxon item, matched by name — has zero sitelinks,
+     while the actual, 260-sitelink Wikipedia article is modelled on a separate "cattle"
+     item carrying no `P225` at all, a real and not-uncommon Wikidata modelling pattern for
+     well-known/domesticated species. An exact-name match can't bridge that gap on its own,
+     so iNaturalist's own `taxon.wikipedia_url` — human-curated, already fetched, previously
+     unused — is cross-checked per language (`inatWikipediaLangMatch()`); a match renders as
+     an amber "?" badge (unconfirmed via Wikidata, not a plain ✓) rather than a false "missing."
+     Separately, a stray Lexeme Sense entity was found matching a `wdt:P225` query
+     live (`Bos taurus` again) and inflating the distinct-candidate count into a false
+     "ambiguous" flag; `pushWikidataCandidate()` now only accepts `Q\d+`-shaped entities.
    - **A `==Taxonomy==` section**, built from cross-checking the classification
      (kingdom–genus) as reported *independently* by iNaturalist, GBIF, and NCBI Taxonomy
      (`compareTaxonomySources()`) — GBIF via `t.wikidata.gbif` when it's set, else a live
