@@ -351,3 +351,4 @@ footer p:last-child { margin-bottom: 0; }
 
 .log-line { opacity: 0.85; overflow-wrap: anywhere; }
 .log-line.err { color: var(--danger-text); }
+.log-line.warn { color: var(--warn-text); }
