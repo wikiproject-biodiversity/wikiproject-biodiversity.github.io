@@ -50,7 +50,7 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', sil
     try {
       const bindingsStream = await engine.queryBindings(query, {
         sources: [{ type: 'sparql', value: endpoint }],
-        httpTimeout: 30000,
+        httpTimeout: 15000,
       });
       const rows = await bindingsStream.toArray();
       const out = rows.map(b => {
@@ -251,7 +251,10 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
   OPTIONAL { ?wdTaxon wdt:P3151 ?inat }
   OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
 }`;
-        const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
+        // retries: 1 (not the default 3) — this is a best-effort re-check with a safe
+        // fallback (keep QLever's answer) right below, so it's not worth burning up to
+        // a minute-plus per stuck batch retrying the one endpoint that's already struggling.
+        const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true, retries: 1 });
         for (const r of rows) pushWikidataCandidate(byName, r);
         return rows.length;
       }, WDQS_BATCH_SIZE);
@@ -313,17 +316,20 @@ async function resolveSitelinks(taxa) {
   // real, but "no sitelink" from a ~6-week-old snapshot could just mean the Wikipedia
   // article was written more recently than that — precisely the false negative this
   // tool exists to avoid (it would tell someone to write an article that already
-  // exists). Re-verify only the QIDs with at least one missing language against live
-  // WDQS, and let its answer replace QLever's for just those.
+  // exists). Re-verify only QIDs with NO sitelink in any language — that's the case
+  // staleness would actually flip. A QID with, say, an en article but no ja/es one
+  // isn't a staleness artifact to re-check: ja/es coverage of species is inherently
+  // sparse, so "missing" there is almost always just true, and re-querying WDQS for
+  // every such partial case (most large projects' taxa) is what was overloading it.
   const toRecheck = withWd.filter(t => {
     const langs = byQid.get(t.wikidata.qid);
-    return !langs || LANGS.some(l => !langs[l.code]);
+    return !langs || LANGS.every(l => !langs[l.code]);
   });
   if (toRecheck.length) {
     try {
       await runBatchedStep(toRecheck, 'Wikipedia sitelinks — re-checking QLever misses against live WDQS', async (batch) => {
         const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
-        const rows = await sparqlViaComunica(sitelinkQuery(values, selectVars, optionals), WDQS_ENDPOINT, { silent: true });
+        const rows = await sparqlViaComunica(sitelinkQuery(values, selectVars, optionals), WDQS_ENDPOINT, { silent: true, retries: 1 });
         for (const r of rows) {
           const qid = r.wdTaxon.split('/').pop();
           const langs = {};
@@ -751,7 +757,7 @@ async function sparqlFirstRowWithFallback(query, label) {
   const primary = await sparqlViaComunica(query, QLEVER_ENDPOINT, { silent: true });
   if (primary.length) return primary;
   try {
-    return await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true });
+    return await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true, retries: 1 });
   } catch (e) {
     log(`WDQS re-check failed for "${label}" (${e.message}) — trusting QLever's empty result`, true);
     return [];
@@ -1115,8 +1121,19 @@ let currentFilter = 'all';
 // whitespace and cap what's left, so one pathological message still can't flood the log
 // (or, as happened once, visually overlap the header above it).
 function sanitizeLogMessage(msg) {
-  const withoutQueryStrings = String(msg).replace(/(https?:\/\/[^\s")]+?)\?[^\s")]*/g, '$1');
-  const collapsed = withoutQueryStrings.replace(/\s+/g, ' ').trim();
+  // Comunica error messages sometimes append the raw (often URL-encoded) SPARQL
+  // query text straight after the endpoint URL — with a "?" separator (GET-style),
+  // or with none at all (POST-body dumps). Collapse any of our known endpoints
+  // down to their bare form, discarding whatever non-whitespace junk follows.
+  const KNOWN_ENDPOINTS = [QLEVER_ENDPOINT, WDQS_ENDPOINT, BHL_ENDPOINT, PLAZI_ENDPOINT, COMMONS_ENDPOINT];
+  let cleaned = String(msg);
+  for (const ep of KNOWN_ENDPOINTS) {
+    const escaped = ep.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(escaped + '\\S*', 'g'), ep);
+  }
+  // Fallback for any other URL not in the known list.
+  cleaned = cleaned.replace(/(https?:\/\/[^\s")]+?)\?[^\s")]*/g, '$1');
+  const collapsed = cleaned.replace(/\s+/g, ' ').trim();
   const MAX = 240;
   return collapsed.length > MAX ? collapsed.slice(0, MAX) + '… (truncated)' : collapsed;
 }
