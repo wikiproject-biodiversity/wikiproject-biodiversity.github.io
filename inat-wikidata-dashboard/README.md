@@ -44,12 +44,15 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
 3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
    resolved item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
    (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
-   to surface. Only taxa with at least one missing language get re-verified against live
+   to surface. Only taxa with *no* sitelink in any language get re-verified against live
    WDQS; a stale "missing" would wrongly send someone to write an article that already
-   exists, which is precisely the failure this tool is supposed to prevent. The same
-   "trust a match, re-check a miss" pattern (`sparqlFirstRowWithFallback`) also backs
-   every other single-item Wikidata lookup in the app — the taxon-parent resolution and
-   the project/user identity checks below.
+   exists, which is precisely the failure this tool is supposed to prevent. A taxon
+   missing just `ja`/`es` isn't re-checked — species coverage in those languages is
+   inherently sparse, so that "missing" is almost always simply true, and re-querying
+   WDQS for every such partial case (most taxa, on a large project) is what was
+   overloading it. The same "trust a match, re-check a miss" pattern
+   (`sparqlFirstRowWithFallback`) also backs every other single-item Wikidata lookup in
+   the app — the taxon-parent resolution and the project/user identity checks below.
 4. **Comunica → Plazi TreatmentBank (QLever)** — a third batched query checks
    [SynoSpecies](https://synospecies.plazi.org)' own QLever mirror of Plazi's
    taxonomic treatments (`qlever.ld.plazi.org/sparql`) for how many published
