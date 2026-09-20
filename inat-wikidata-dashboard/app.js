@@ -223,7 +223,12 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress) {
 
 // ---------- Wikidata resolution ----------
 
+// wdt:P225 is meant to live only on ordinary items (Q...), but SPARQL happily matches
+// any entity with that predicate — including, found live on a real query (Bos taurus),
+// a stray Lexeme Sense (L...-S...). That's not a competing taxon item, just noise that
+// would otherwise inflate the distinct-QID count and trip a false "ambiguous" flag.
 function pushWikidataCandidate(byName, r) {
+  if (!/\/Q\d+$/.test(r.wdTaxon)) return;
   const list = byName.get(r.taxonLabel) || [];
   list.push({
     qid: r.wdTaxon.split('/').pop(),
@@ -740,19 +745,30 @@ async function ensureCandidateImages(t) {
 // `citation` is a real {title, containerTitle, date, url} to cite instead.
 const CITATION_NEEDED = { en: '{{citation needed}}', es: '{{cita requerida}}', ja: '{{要出典}}', pt: '{{carece de fontes}}' };
 
+// {{cite doi}} (a bot-maintained subpage-per-DOI system) was deprecated and discontinued
+// around 2016 — the current, still-live convention is a plain |doi= parameter on the
+// normal citation templates, which Citation Style 1's {{cite web}} accepts same as
+// {{cite journal}} does. When a DOI is known, cite it directly (|doi=) rather than
+// wrapping it in a doi.org URL — |url= is then redundant (the template resolves the
+// link itself) so it's dropped in that case.
 function leadCitationWikitext(lang, citation) {
   if (!citation) return CITATION_NEEDED[lang] || CITATION_NEEDED.en;
+  // The publication already has a Wikidata item — cite it live from there ({{cite Q}}) as
+  // the modern equivalent of the deprecated {{cite doi}}, same template name in wide use
+  // across languages, rather than repeating title/journal/date inline.
+  if (citation.qid) return `<ref>{{cite Q|${citation.qid}}}</ref>`;
   const accessDate = todayISO();
+  const linkPart = citation.doi ? ` |doi=${citation.doi}` : ` |url=${citation.url}`;
   if (lang === 'es') {
-    return `<ref>{{cita web |título=${citation.title}${citation.containerTitle ? ` |sitioweb=${citation.containerTitle}` : ''}${citation.date ? ` |fecha=${citation.date}` : ''} |url=${citation.url} |fechaacceso=${accessDate}}}</ref>`;
+    return `<ref>{{cita web |título=${citation.title}${citation.containerTitle ? ` |sitioweb=${citation.containerTitle}` : ''}${citation.date ? ` |fecha=${citation.date}` : ''}${linkPart} |fechaacceso=${accessDate}}}</ref>`;
   }
   if (lang === 'ja') {
-    return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''} |url=${citation.url} |accessdate=${accessDate}}}</ref>`;
+    return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''}${linkPart} |accessdate=${accessDate}}}</ref>`;
   }
   if (lang === 'pt') {
-    return `<ref>{{citar web |título=${citation.title}${citation.containerTitle ? ` |site=${citation.containerTitle}` : ''}${citation.date ? ` |data=${citation.date}` : ''} |url=${citation.url} |acessodata=${accessDate}}}</ref>`;
+    return `<ref>{{citar web |título=${citation.title}${citation.containerTitle ? ` |site=${citation.containerTitle}` : ''}${citation.date ? ` |data=${citation.date}` : ''}${linkPart} |acessodata=${accessDate}}}</ref>`;
   }
-  return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''} |url=${citation.url} |access-date=${accessDate}}}</ref>`;
+  return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''}${linkPart} |access-date=${accessDate}}}</ref>`;
 }
 
 // GBIF's `authorship` field is normally just "Author, Year" (parens around it mean the
@@ -1499,15 +1515,48 @@ function setStatusProgress(progressText) {
   statusHeaderTextEl.textContent = progressText ? `${currentStatusBase} — ${progressText}` : currentStatusBase;
 }
 
+// iNaturalist's own `taxon.wikipedia_url` is a human-curated pointer to whatever
+// Wikipedia article actually covers a taxon — which is NOT always the item this tool
+// matched by exact P225 string. Found live: Bos taurus (the strict taxon item, matched
+// by name) has zero sitelinks, while the actual, heavily-referenced Wikipedia article is
+// modelled on a separate "cattle" item that carries no P225 at all — an exact-name match
+// can't bridge that on its own. Cross-checking against iNaturalist's own link catches
+// exactly this case without needing another SPARQL query.
+function inatWikipediaLangMatch(t, code) {
+  if (!t.inatWikipediaUrl) return false;
+  try { return new URL(t.inatWikipediaUrl).hostname === `${code}.wikipedia.org`; }
+  catch (e) { return false; }
+}
+
 function taxonMissingCount(t) {
   if (!t.wikidata || !t.wikipedia) return null;
-  return LANGS.filter(l => !t.wikipedia[l.code]).length;
+  return LANGS.filter(l => !t.wikipedia[l.code] && !inatWikipediaLangMatch(t, l.code)).length;
 }
 
 // True once the Wikidata item matched by scientific name also carries THIS taxon's
 // iNaturalist id as P3151 — a name match alone doesn't mean the two are cross-linked.
 function inatIdLinked(t) {
   return !!(t.wikidata && t.wikidata.inat != null && String(t.wikidata.inat) === String(t.inatId));
+}
+
+// Whether it's actually safe to draft a NEW Wikipedia stub tied to this taxon's matched
+// Wikidata item — as opposed to whether an article happens to be missing. Those are
+// different questions: an ambiguous match, a conflicted or unlinked iNaturalist id all
+// mean this tool isn't confident *which* Wikidata item this taxon really is, and
+// drafting {{Taxonbar|from=<possibly-the-wrong-item>}} on that basis would compound the
+// existing data problem rather than fix anything. Each of these is already surfaced
+// elsewhere (the ambiguous pill, the conflict panel, the "link iNat ID" flow) — this
+// just refuses to let stub-drafting proceed until whichever applies is resolved there.
+function stubReadiness(t) {
+  const blockers = [];
+  if (!t.wikidata) {
+    blockers.push('not yet on Wikidata');
+  } else {
+    if (t.wikidataAmbiguous) blockers.push('ambiguous Wikidata match — multiple items share this scientific name');
+    if (t.wikidataInatIdConflict) blockers.push(`${t.wikidataInatIdConflict.length} conflicting iNaturalist ids on the matched item`);
+    else if (!inatIdLinked(t)) blockers.push("the matched item's iNaturalist id (P3151) isn't linked back to this taxon");
+  }
+  return { ready: blockers.length === 0, blockers };
 }
 
 // Matched item, no P3151 conflict on it, but not yet linked to THIS taxon's id — the
@@ -1537,6 +1586,13 @@ function langBadge(t, code) {
   if (!t.wikidata) return '<span class="pill">—</span>';
   const url = t.wikipedia ? t.wikipedia[code] : null;
   if (url) return `<a class="badge yes" href="${url}" target="_blank" rel="noopener" title="Has ${code} Wikipedia article">✓</a>`;
+  if (inatWikipediaLangMatch(t, code)) {
+    return `<a class="badge maybe" href="${t.inatWikipediaUrl}" target="_blank" rel="noopener" title="iNaturalist links to this page for ${code}, but it's not confirmed via Wikidata — the article may be modelled under a different Wikidata item (no exact P225 match). Check before drafting a new stub.">?</a>`;
+  }
+  const readiness = stubReadiness(t);
+  if (!readiness.ready) {
+    return `<span class="badge no blocked" title="Can't draft a stub yet — ${readiness.blockers.join('; ')}. Resolve this on the taxon's curation page first.">✗</span>`;
+  }
   return `<button class="badge no stub-btn" data-inat-id="${t.inatId}" data-lang="${code}" title="No ${code} Wikipedia article — click to draft a stub">✗</button>`;
 }
 
@@ -1643,7 +1699,16 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
 
 function taxonUrl(inatId) { return `#taxon=${inatId}`; }
 
+// Bumped on every call so an in-flight render can tell it's been superseded (the curation
+// page can be re-entered quickly — a real click, or a picked image re-rendering the whole
+// page — and this function has several `await`s in between its DOM writes; without this,
+// two overlapping calls can interleave and leave the row from one render sitting next to
+// the action panels from a different taxon's render). Each call checks its own token
+// against the current one after every await and bails without writing if it's stale.
+let taxonDetailRenderToken = 0;
+
 async function renderTaxonDetail(t) {
+  const myToken = ++taxonDetailRenderToken;
   statsEl.hidden = true;
   filtersEl.hidden = true;
   bulkActionsEl.hidden = true;
@@ -1654,6 +1719,7 @@ async function renderTaxonDetail(t) {
 
   let ctx = null;
   try { ctx = await ensureStubContext(t); } catch (e) { /* header/actions degrade gracefully without it */ }
+  if (myToken !== taxonDetailRenderToken) return;
   const ancestry = ctx ? RANK_ORDER.map(r => ctx.ranks[r]).filter(Boolean).join(' › ') : '';
   const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
   const photoUrl = (usingObsPhoto && t.obsPhoto.originalUrl) || t.photo;
@@ -1680,12 +1746,20 @@ async function renderTaxonDetail(t) {
     } catch (e) {
       panels.push(taxonActionPanel('Wikidata — not found', `Could not build QuickStatements: ${e.message}`, ''));
     }
+  } else if (t.wikidataAmbiguous) {
+    panels.push(taxonActionPanel('Wikidata — ambiguous match',
+      `Multiple Wikidata items share the scientific name <em>${t.name}</em>; this taxon was matched to
+      <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>, but this tool can't be
+      sure that's the right one. <strong>Wikipedia stub drafting is disabled</strong> until this is resolved —
+      compare the candidates on Wikidata directly and add the correct iNaturalist id (<code>P3151</code>) to
+      whichever one is actually this taxon, so future runs can disambiguate automatically.`, ''));
   } else if (t.wikidataInatIdConflict) {
     panels.push(taxonActionPanel(`Wikidata — ${t.wikidataInatIdConflict.length} iNat IDs on ${t.wikidata.qid}`,
-      inatIdConflictDetail(t), ''));
+      inatIdConflictDetail(t) + '<p><strong>Wikipedia stub drafting is disabled</strong> until this is resolved.</p>', ''));
   } else if (!inatIdLinked(t)) {
     panels.push(taxonActionPanel(`Wikidata — ${t.wikidata.qid} missing its iNat ID`,
-      `This item exists but has no <code>P3151</code> statement pointing back at iNaturalist taxon ${t.inatId}. Proposed QuickStatements to add just that:`,
+      `This item exists but has no <code>P3151</code> statement pointing back at iNaturalist taxon ${t.inatId}.
+      <strong>Wikipedia stub drafting is disabled</strong> until this is linked. Proposed QuickStatements to add just that:`,
       buildInatIdLinkQS(t), { showQsLink: true }));
   }
 
@@ -1695,25 +1769,27 @@ async function renderTaxonDetail(t) {
   // up front, and let the picker on each language panel swap in a real one. Both this and
   // the candidate-image lookup below are cached on `t` (not re-fetched) so that picking
   // an image — which re-renders this whole page — doesn't repeat either query.
-  const needsWikipedia = LANGS.some(l => t.wikidata && (!t.wikipedia || !t.wikipedia[l.code]));
-  if (needsWikipedia) {
+  const readiness = stubReadiness(t);
+  const missingLangs = LANGS.filter(l => t.wikidata && (!t.wikipedia || !t.wikipedia[l.code]) && !inatWikipediaLangMatch(t, l.code));
+  if (readiness.ready && missingLangs.length) {
     if (!t._bhlResults) {
       try { t._bhlResults = await fetchBHL(t.name); } catch (e) { t._bhlResults = []; }
     }
     const images = await ensureCandidateImages(t).catch(() => []);
     panels.push(imageSelectorPanel(t, images));
-  }
-  for (const l of LANGS) {
-    if (t.wikidata && t.wikipedia && t.wikipedia[l.code]) continue; // already has an article
-    if (!t.wikidata) continue; // no Wikidata item yet — nothing to link a new article to
-    try {
-      const wikitext = await buildStub(t, l.code);
-      panels.push(wikipediaStubPanel(t, l.code, wikitext));
-    } catch (e) {
-      panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`, `Could not draft a stub: ${e.message}`, ''));
+    for (const l of missingLangs) {
+      try {
+        const wikitext = await buildStub(t, l.code);
+        panels.push(wikipediaStubPanel(t, l.code, wikitext));
+      } catch (e) {
+        panels.push(taxonActionPanel(`Wikipedia (${l.code}) — no article`, `Could not draft a stub: ${e.message}`, ''));
+      }
     }
+  } else if (!readiness.ready && t.wikidata && missingLangs.length) {
+    panels.push(`<p class="identity-note">Wikipedia stub drafting for ${missingLangs.map(l => l.code).join('/')} is disabled until the Wikidata issue above is resolved.</p>`);
   }
 
+  if (myToken !== taxonDetailRenderToken) return;
   taxonDetailActionsEl.innerHTML = panels.length
     ? panels.join('')
     : '<p class="identity-note">Nothing outstanding — Wikidata is linked with a matching iNaturalist id, and every tracked language already has an article.</p>';
@@ -1808,7 +1884,7 @@ function wikipediaStubPanel(t, lang, wikitext) {
     ));
   const bhlNote = bhlResults.length
     ? ''
-    : '<p class="identity-note">No BHL literature found for this taxon — the lead sentence stays marked {{citation needed}} until you search for and add a source manually.</p>';
+    : '<p class="identity-note">No BHL literature found for this taxon.</p>';
   return `<div class="identity-panel taxon-action-panel">
     <h3>Wikipedia (${lang}) — no article</h3>
     <div>
@@ -1823,11 +1899,75 @@ function wikipediaStubPanel(t, lang, wikitext) {
           ${options.join('')}
         </select>
       </label>
-      <button class="small-btn copy-stub-btn" data-target="${id}">Copy</button>
     </div>
     ${bhlNote}
+    <div class="stub-toolbar manual-citation">
+      <input type="text" class="manual-citation-title" placeholder="Title (auto-filled for a DOI if left blank)">
+      <input type="text" class="manual-citation-url" placeholder="...or cite a URL or DOI instead">
+      <button class="small-btn manual-citation-apply" data-inat-id="${t.inatId}" data-lang="${lang}" data-target="${id}">Use this citation</button>
+    </div>
+    <div class="manual-citation-wd-propose"></div>
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${id}">Copy</button>
+    </div>
     <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
   </div>`;
+}
+
+const DOI_RE = /^(?:https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/\S+)$/i;
+
+function extractDoi(value) {
+  const m = String(value).trim().match(DOI_RE);
+  return m ? m[1] : null;
+}
+
+// Crossref's REST API needs no key and covers the vast majority of DOIs a curator would
+// plausibly cite (journal articles, most published descriptions) — used to auto-fill
+// title/journal/year from just a DOI, the same way the BHL picker saves retyping a
+// citation that's already fully described somewhere machine-readable.
+async function fetchCrossrefWork(doi) {
+  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`Crossref HTTP ${res.status}`);
+  const msg = (await res.json()).message || {};
+  const dateParts = (msg.published && msg.published['date-parts'] && msg.published['date-parts'][0])
+    || (msg['published-print'] && msg['published-print']['date-parts'] && msg['published-print']['date-parts'][0])
+    || (msg['published-online'] && msg['published-online']['date-parts'] && msg['published-online']['date-parts'][0]);
+  return {
+    title: (msg.title && msg.title[0]) || '',
+    containerTitle: (msg['container-title'] && msg['container-title'][0]) || '',
+    date: dateParts ? String(dateParts[0]) : '',
+  };
+}
+
+// {{cite doi}} pulled a full citation from a bot-maintained subpage keyed by the DOI —
+// deprecated and discontinued around 2016. Its live successor is {{cite Q}}, which pulls
+// the same kind of structured citation straight from a Wikidata item's own statements
+// instead. So before falling back to an inline |doi= citation, check whether the
+// publication already has a Wikidata item — Wikidata convention stores P356 (DOI)
+// uppercased, so that's what gets queried.
+async function fetchWikidataItemByDoi(doi) {
+  const rows = await sparqlFirstRowWithFallback(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?item WHERE { ?item wdt:P356 ${sparqlStringLiteral(doi.toUpperCase())} } LIMIT 1`,
+    `Wikidata lookup by DOI ${doi}`
+  );
+  return rows.length ? rows[0].item.split('/').pop() : null;
+}
+
+// A minimal CREATE draft for the publication itself — P31 scholarly article, the DOI,
+// and whatever Crossref supplied (title as both a label and P1476, a year-precision
+// P577). Like every other QuickStatements draft in this tool, this is only ever a
+// proposal to copy/paste and review; nothing here touches Wikidata directly. Once a
+// curator actually runs it, the taxon's citation can be switched to {{cite Q}} by
+// re-entering the same DOI (it'll resolve on Wikidata this time).
+function buildPublicationQS(doi, meta) {
+  const lines = ['CREATE', `LAST\tP31\tQ13442814`, `LAST\tP356\t${qsString(doi.toUpperCase())}`];
+  if (meta.title) {
+    lines.push(`LAST\tLen\t${qsString(meta.title)}`);
+    lines.push(`LAST\tP1476\ten:${qsString(meta.title)}`);
+  }
+  if (meta.date) lines.push(`LAST\tP577\t+${meta.date}-00-00T00:00:00Z/9`);
+  return lines.join('\n');
 }
 
 document.addEventListener('change', async (e) => {
@@ -1841,6 +1981,12 @@ document.addEventListener('change', async (e) => {
   select.disabled = true;
   try {
     textarea.value = await buildStub(t, select.dataset.lang, citation);
+    // A BHL pick and a manual one are alternatives for the same single citation slot —
+    // picking one should visibly clear the other, so the panel never shows two active
+    // choices when only the most recent one actually took effect.
+    const panel = select.closest('.taxon-action-panel');
+    const manualUrl = panel && panel.querySelector('.manual-citation-url');
+    if (manualUrl) { manualUrl.value = ''; panel.querySelector('.manual-citation-title').value = ''; }
   } catch (err) {
     log(`Could not rebuild stub with the chosen citation: ${err.message}`, 'warn');
   } finally {
@@ -1848,7 +1994,65 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.manual-citation-apply');
+  if (!btn) return;
+  const panel = btn.closest('.taxon-action-panel');
+  const urlInput = panel.querySelector('.manual-citation-url');
+  const titleInput = panel.querySelector('.manual-citation-title');
+  const raw = urlInput.value.trim();
+  if (!raw) return;
+  const t = currentTaxa.find(x => x.inatId === Number(btn.dataset.inatId));
+  const textarea = document.getElementById(btn.dataset.target);
+  if (!t || !textarea) return;
+
+  const proposeBox = panel.querySelector('.manual-citation-wd-propose');
+  proposeBox.innerHTML = '';
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const doi = extractDoi(raw);
+    let citation;
+    if (doi) {
+      const qid = await fetchWikidataItemByDoi(doi).catch(() => null);
+      if (qid) {
+        citation = { qid };
+      } else {
+        let meta = {};
+        if (!titleInput.value.trim()) {
+          try { meta = await fetchCrossrefWork(doi); } catch (err) { log(`Crossref lookup for ${doi} failed: ${err.message}`, 'warn'); }
+        }
+        citation = { title: titleInput.value.trim() || meta.title || raw, containerTitle: meta.containerTitle || '', date: meta.date || '', doi };
+        // Not on Wikidata yet — offer to propose it, same as every other "not found"
+        // case in this tool. Once a curator actually creates it, re-entering this DOI
+        // will resolve on Wikidata and switch the citation to {{cite Q}} instead.
+        const qsId = `${btn.dataset.target}-wd-qs`;
+        proposeBox.innerHTML = `<p class="identity-note">This DOI has no Wikidata item yet.</p>
+          <div class="stub-toolbar">
+            <button class="small-btn copy-stub-btn" data-target="${qsId}">Copy commands</button>
+            <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+          </div>
+          <textarea id="${qsId}" class="stub-textarea" readonly spellcheck="false">${buildPublicationQS(doi, citation)}</textarea>`;
+      }
+    } else {
+      citation = { title: titleInput.value.trim() || raw, url: raw };
+    }
+    textarea.value = await buildStub(t, btn.dataset.lang, citation);
+    // Same reasoning as the BHL select above, in reverse: a manual citation just took
+    // effect, so any BHL selection shown as "active" would be stale.
+    const select = panel.querySelector('.bhl-citation-select');
+    if (select) select.value = '';
+  } catch (err) {
+    log(`Could not build a citation from "${raw}": ${err.message}`, 'warn');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+});
+
 function showTableView() {
+  taxonDetailRenderToken++; // invalidate any renderTaxonDetail still in flight
   taxonDetailEl.hidden = true;
   if (currentTaxa.length) {
     statsEl.hidden = false;
