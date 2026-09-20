@@ -41,6 +41,13 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    make the QuickStatements feature below draft a duplicate item, only QLever's *misses*
    get a live re-check against WDQS (`resolveWikidata`'s second pass) — everything it
    already found is trusted as-is, so the common case stays fast and off WDQS entirely.
+   A name match doesn't imply the two records are cross-linked, though: the matched
+   item might still lack `P3151` back to this exact iNaturalist taxon (added by someone
+   else, from a different source, before this tool existed). The **Wikidata** column
+   flags that case (⚠ no iNat ID) with a one-line QuickStatements action to add just the
+   missing statement — no need for the full `CREATE` draft an unmatched taxon gets — and
+   it has its own stat card and filter ("WD item, no iNat ID") so it doesn't get lost
+   among the Wikipedia-coverage numbers, which are a separate concern.
 3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
    resolved item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
    (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
