@@ -203,7 +203,13 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   in `resolveWikidata`/`resolveSitelinks`) rather than hanging. These retry-attempt and
   fallback-triggered lines log in amber (`log(msg, 'warn')`), not red — they're the tool
   successfully handling a slow/rate-limited public endpoint, not something broken. Red
-  (`log(msg, 'err')`) is reserved for the run actually aborting.
+  (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
+  upfront "the whole run will take N minutes" estimate would just be a guess dressed up
+  as a number. Instead the status header shows which of the 5 pipeline steps is current
+  (`Step 3/5: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
+  remaining)` extrapolated from that step's own pace so far (`runBatchedStep`) — it
+  self-corrects as the step runs rather than committing to a number before the step's
+  actual speed (QLever-fast or WDQS-slow) is even known.
 - One SPARQL batch per 100 taxa (`BATCH_SIZE` in `app.js`; 25 for WDQS specifically,
   `WDQS_BATCH_SIZE`); fine for hackathon-scale projects and tested against a single
   user's full observation history (~2,200 distinct taxa), but both remain public
