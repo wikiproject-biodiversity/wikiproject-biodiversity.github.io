@@ -1108,6 +1108,8 @@ function buildProjectIdentityQS(inatProject, mode, targetQid) {
 // ---------- UI ----------
 
 const statusHeaderEl = document.getElementById('statusHeader');
+const statusHeaderTextEl = document.getElementById('statusHeaderText');
+const statusSpinnerEl = document.getElementById('statusSpinner');
 const statusLogEl = document.getElementById('statusLog');
 const runBtn = document.getElementById('runBtn');
 const scopeTypeSelect = document.getElementById('scopeType');
@@ -1168,8 +1170,7 @@ function log(msg, isErr) {
 }
 
 function setStatusHeader(msg) {
-  const header = statusHeaderEl;
-  header.textContent = msg;
+  statusHeaderTextEl.textContent = msg;
 }
 
 function taxonMissingCount(t) {
@@ -1682,7 +1683,8 @@ async function run() {
   if (!scopeValue) return;
   const noun = scopeType === 'user' ? 'user' : 'project';
   runBtn.disabled = true;
-  statusHeaderEl.textContent = '';
+  statusSpinnerEl.hidden = false;
+  statusHeaderTextEl.textContent = '';
   statusLogEl.innerHTML = '';
   statsEl.hidden = true;
   filtersEl.hidden = true;
@@ -1727,6 +1729,7 @@ async function run() {
     log(err.stack || '', true);
   } finally {
     runBtn.disabled = false;
+    statusSpinnerEl.hidden = true;
   }
 }
 
