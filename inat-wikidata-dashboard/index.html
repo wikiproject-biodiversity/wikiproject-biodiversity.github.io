@@ -219,9 +219,16 @@
           it fetches the taxon's ancestor chain from iNaturalist and its authorship/publication from
           GBIF, then fills in the language's species infobox (<code>{{Speciesbox}}</code> on English
           Wikipedia, <code>{{Ficha de taxón}}</code> on Spanish, <code>{{生物分類表}}</code> on
-          Japanese, <code>{{Info/Taxonomia}}</code> on Portuguese) plus a lead sentence, reference
-          and <code>{{Taxonbar}}</code>. These are drafts only — nothing is ever posted
+          Japanese, <code>{{Info/Taxonomia}}</code> on Portuguese) plus a lead sentence and
+          <code>{{Taxonbar}}</code>. These are drafts only — nothing is ever posted
           automatically; review formatting, the stub template and notability before publishing.
+          The lead sentence is never cited to iNaturalist — it's user-generated content, not a
+          reliable source under Wikipedia's policy — so it stays marked
+          <code>{{citation needed}}</code> until you pick a real one from this taxon's BHL
+          literature on its curation page (below). A <code>==Taxonomy==</code> section is also
+          included, built by cross-checking the classification independently against iNaturalist,
+          GBIF and NCBI Taxonomy and calling out any rank where they disagree, rather than quietly
+          picking one.
         </li>
         <li>
           <strong>Propose QuickStatements (on demand)</strong> — for a taxon with no Wikidata item at
@@ -262,8 +269,10 @@
           (a real, bookmarkable <code>#taxon=&lt;id&gt;</code> URL) with everything outstanding for
           it already shown — no click-to-reveal, unlike the table. Whichever Wikidata action applies
           and a drafted stub for every still-missing language render immediately, ready to review and
-          copy. Same underlying data and actions as the table row, just laid out for working one
-          taxon at a time instead of scanning many at once.
+          copy — each stub panel also has a picker for this taxon's BHL literature, to cite the lead
+          sentence with a real source instead of leaving it <code>{{citation needed}}</code>. Same
+          underlying data and actions as the table row, just laid out for working one taxon at a time
+          instead of scanning many at once.
         </li>
         <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
