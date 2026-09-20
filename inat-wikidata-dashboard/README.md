@@ -3,7 +3,7 @@
 A static, client-side JavaScript tool that cross-references the taxa observed in an
 [iNaturalist](https://www.inaturalist.org) project — or by a specific iNaturalist user —
 against [Wikidata](https://www.wikidata.org), and flags which ones are still missing a
-Wikipedia article in English, Japanese and/or Spanish. Inspired by
+Wikipedia article in English, Japanese, Spanish and/or Portuguese. Inspired by
 [iNotListed](https://github.com/wikiproject-biodiversity/iNotListed), reimplemented as
 a browser tool with [Comunica](https://comunica.dev) doing the SPARQL federation
 instead of a Python CLI hitting one endpoint at a time.
@@ -54,12 +54,12 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    *additions*, and deciding which of several existing statements is the stale one to
    remove needs a curator checking iNaturalist directly, not a guess.
 3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
-   resolved item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
+   resolved item, whether an `en`/`ja`/`es`/`pt` Wikipedia sitelink exists
    (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
    to surface. Only taxa with *no* sitelink in any language get re-verified against live
    WDQS; a stale "missing" would wrongly send someone to write an article that already
    exists, which is precisely the failure this tool is supposed to prevent. A taxon
-   missing just `ja`/`es` isn't re-checked — species coverage in those languages is
+   missing just `ja`/`es`/`pt` isn't re-checked — species coverage in those languages is
    inherently sparse, so that "missing" is almost always simply true, and re-querying
    WDQS for every such partial case (most taxa, on a large project) is what was
    overloading it. The same "trust a match, re-check a miss" pattern
@@ -96,13 +96,14 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    showing the button. iNaturalist's photo host (`inaturalist-open-data.s3.amazonaws.com`) is on
    that list today. You still need your own Wikimedia account and click "Upload file" on Commons
    yourself — nothing is uploaded automatically by this page.
-8. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es columns.
+8. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es/pt columns.
    In the spirit of
    [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker),
    it fetches the taxon's ancestor chain from iNaturalist and authorship/publication
    from GBIF, then fills in that language's species infobox (`{{Speciesbox}}` on
-   English, `{{Ficha de taxón}}` on Spanish, `{{生物分類表}}` on Japanese) plus a lead
-   sentence, a reference and `{{Taxonbar}}`. These are **drafts only** — nothing is
+   English, `{{Ficha de taxón}}` on Spanish, `{{生物分類表}}` on Japanese,
+   `{{Info/Taxonomia}}` on Portuguese) plus a lead sentence, a reference and
+   `{{Taxonbar}}`. These are **drafts only** — nothing is
    ever posted to Wikipedia automatically; always review formatting, categories and
    notability before publishing.
 9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
