@@ -47,7 +47,12 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    flags that case (⚠ no iNat ID) with a one-line QuickStatements action to add just the
    missing statement — no need for the full `CREATE` draft an unmatched taxon gets — and
    it has its own stat card and filter ("WD item, no iNat ID") so it doesn't get lost
-   among the Wikipedia-coverage numbers, which are a separate concern.
+   among the Wikipedia-coverage numbers, which are a separate concern. The opposite data
+   problem — an item carrying *two or more* different `P3151` values (an old iNaturalist
+   taxon id left behind after a merge/split, say) — gets its own flag too (⚠ N iNat IDs —
+   needs review), but deliberately no automated fix: this tool only ever proposes
+   *additions*, and deciding which of several existing statements is the stale one to
+   remove needs a curator checking iNaturalist directly, not a guess.
 3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
    resolved item, whether an `en`/`ja`/`es` Wikipedia sitelink exists
    (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
