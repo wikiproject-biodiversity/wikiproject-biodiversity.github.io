@@ -312,6 +312,9 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
 .badge.yes { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .badge.no { background: color-mix(in srgb, var(--missing) 18%, transparent); color: var(--missing); cursor: pointer; }
 .badge.no:hover { background: color-mix(in srgb, var(--missing) 32%, transparent); }
+.badge.no.blocked { cursor: not-allowed; opacity: 0.55; }
+.badge.no.blocked:hover { background: color-mix(in srgb, var(--missing) 18%, transparent); }
+.badge.maybe { background: color-mix(in srgb, var(--warn-text) 18%, transparent); color: var(--warn-text); }
 
 .pill {
   font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-dim);
@@ -375,6 +378,20 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
   background: var(--bg);
   color: var(--text);
 }
+
+.manual-citation input {
+  font-size: 0.8rem;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.manual-citation-title { width: 220px; }
+.manual-citation-url { width: 260px; }
+.manual-citation-wd-propose:not(:empty) { margin: 6px 0; }
+
 .upload-btn { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 
 .stub-textarea {
