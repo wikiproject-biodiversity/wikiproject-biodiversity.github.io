@@ -273,8 +273,15 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
     const distinctQids = [...new Set(candidates.map(c => c.qid))];
     let chosen = null;
     let ambiguous = false;
+    let inatIdConflict = null;
     if (distinctQids.length === 1) {
       chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
+      // Unlike the row-count artifact above, genuinely distinct P3151 *values* on the
+      // one item are a real data problem — an old and current iNaturalist taxon id both
+      // left on it, say — worth a curator's attention even though this tool can't safely
+      // guess which one to remove.
+      const distinctInatValues = [...new Set(candidates.map(c => c.inat).filter(Boolean))];
+      if (distinctInatValues.length > 1) inatIdConflict = distinctInatValues;
     } else if (distinctQids.length > 1) {
       chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
       ambiguous = true;
@@ -282,6 +289,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
     t.wikidata = chosen;
     t.wikidataAmbiguous = ambiguous;
     t.wikidataCandidateCount = distinctQids.length;
+    t.wikidataInatIdConflict = inatIdConflict;
   }
   return taxa;
 }
@@ -1178,7 +1186,8 @@ function inatIdLinked(t) {
 function matchesFilter(t) {
   if (currentFilter === 'all') return true;
   if (currentFilter === 'unresolved') return !t.wikidata;
-  if (currentFilter === 'inat-id-missing') return !!t.wikidata && !inatIdLinked(t);
+  if (currentFilter === 'inat-id-missing') return !!t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t);
+  if (currentFilter === 'inat-id-conflict') return !!t.wikidataInatIdConflict;
   const missing = taxonMissingCount(t);
   if (missing === null) return false;
   if (currentFilter === 'missing-any') return missing > 0;
@@ -1224,9 +1233,11 @@ function renderTable() {
       : '';
     const wd = !t.wikidata
       ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
-      : inatIdLinked(t)
-        ? wdLink
-        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
+      : t.wikidataInatIdConflict
+        ? `${wdLink} <span class="pill" title="This item has ${t.wikidataInatIdConflict.length} different iNaturalist taxon ids on it (${t.wikidataInatIdConflict.join(', ')}) — likely an old one left behind after a merge/split. Needs a curator to check iNaturalist and remove the stale statement(s); not something to fix by adding another.">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — needs review</span>`
+        : inatIdLinked(t)
+          ? wdLink
+          : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
     const gbif = t.wikidata && t.wikidata.gbif
       ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
       : '<span class="pill">—</span>';
@@ -1654,12 +1665,14 @@ function updateStats() {
   const resolved = currentTaxa.filter(t => t.wikidata).length;
   const missingAny = currentTaxa.filter(t => taxonMissingCount(t) > 0).length;
   const missingAll = currentTaxa.filter(t => taxonMissingCount(t) === LANGS.length).length;
-  const inatIdMissing = currentTaxa.filter(t => t.wikidata && !inatIdLinked(t)).length;
+  const inatIdMissing = currentTaxa.filter(t => t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t)).length;
+  const inatIdConflict = currentTaxa.filter(t => t.wikidataInatIdConflict).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
   document.getElementById('statMissingAny').textContent = missingAny;
   document.getElementById('statMissingAll').textContent = missingAll;
   document.getElementById('statInatIdMissing').textContent = inatIdMissing;
+  document.getElementById('statInatIdConflict').textContent = inatIdConflict;
   statsEl.hidden = false;
 }
 
