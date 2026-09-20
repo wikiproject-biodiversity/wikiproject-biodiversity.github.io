@@ -265,17 +265,23 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
 
   for (const t of taxa) {
     const candidates = byName.get(t.name) || [];
+    // The query's OPTIONAL joins (gbif/inat/commonsCat) each produce one row per VALUE,
+    // so a single item with e.g. two P3151 statements (an old + current iNaturalist
+    // taxon id both left on it) comes back as two rows for the same QID — not two
+    // competing items. Count distinct QIDs, not rows, or that shows up as a false
+    // "ambiguous" on an item that isn't ambiguous at all.
+    const distinctQids = [...new Set(candidates.map(c => c.qid))];
     let chosen = null;
     let ambiguous = false;
-    if (candidates.length === 1) {
-      chosen = candidates[0];
-    } else if (candidates.length > 1) {
+    if (distinctQids.length === 1) {
+      chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
+    } else if (distinctQids.length > 1) {
       chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
       ambiguous = true;
     }
     t.wikidata = chosen;
     t.wikidataAmbiguous = ambiguous;
-    t.wikidataCandidateCount = candidates.length;
+    t.wikidataCandidateCount = distinctQids.length;
   }
   return taxa;
 }
