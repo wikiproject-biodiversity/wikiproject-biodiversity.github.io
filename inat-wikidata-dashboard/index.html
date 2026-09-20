@@ -51,6 +51,7 @@
   <div class="stat"><span id="statResolved">0</span><label>matched in Wikidata</label></div>
   <div class="stat warn"><span id="statMissingAny">0</span><label>missing ≥1 Wikipedia</label></div>
   <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es</label></div>
+  <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
 </section>
 
 <section id="filters" class="filters" hidden>
@@ -58,6 +59,7 @@
   <button class="filter-btn" data-filter="missing-any">Missing ≥1 Wikipedia</button>
   <button class="filter-btn" data-filter="missing-all">Missing all 3</button>
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
+  <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
 </section>
 
 <section id="tableWrap" class="table-wrap" hidden>
@@ -107,16 +109,23 @@
           everything QLever already answered is trusted as-is. This keeps the fast path fast (QLever
           alone, no WDQS rate-limiting) while avoiding the false-negative case that actually matters
           here: mistaking "too new for the mirror" for "not on Wikidata" is exactly what would make
-          the "propose QuickStatements" feature below draft a duplicate.
+          the "propose QuickStatements" feature below draft a duplicate. A name match alone doesn't
+          mean the two records are cross-linked, though — the matched item may still lack
+          <code>P3151</code> back to this exact iNaturalist taxon. That case gets its own
+          <span class="pill" style="display:inline">⚠ no iNat ID</span> marker in the Wikidata
+          column, a "link iNat ID" one-line QuickStatements action, and its own stat card and filter,
+          separate from the Wikipedia-coverage numbers below.
         </li>
         <li>
           <strong>Same QLever-first, WDQS-fallback pattern for sitelinks</strong> — checks, for
           every resolved item, whether an English, Japanese or Spanish Wikipedia
           <code>sitelink</code> exists (<code>schema:about</code> / <code>schema:isPartOf</code>);
-          anything missing is the "not listed" signal this tool is for. Only taxa with at least one
-          missing language get re-verified against live WDQS, since (again) this tool's whole
-          purpose is flagging what's missing, and a stale "missing" would wrongly send someone to
-          write an article that already exists. Batches are paced 200ms apart and a <code>429</code>
+          anything missing is the "not listed" signal this tool is for. Only taxa with <em>no</em>
+          sitelink in any language get re-verified against live WDQS — missing just Japanese or
+          Spanish isn't re-checked, since species coverage in those languages is inherently sparse
+          and re-querying WDQS for every such partial case is what was overloading it; a stale
+          "missing" for a taxon with no sitelinks at all would wrongly send someone to write an
+          article that already exists. Batches are paced 200ms apart and a <code>429</code>
           gets a longer, dedicated backoff rather than the same short retry as any other error —
           both public endpoints can still rate-limit or time out under real load (a single
           iNaturalist user's full observation history, or this tool's own testing volume on a given
