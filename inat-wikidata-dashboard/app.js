@@ -22,6 +22,7 @@ const LANGS = [
   { code: 'en', wiki: 'https://en.wikipedia.org/' },
   { code: 'ja', wiki: 'https://ja.wikipedia.org/' },
   { code: 'es', wiki: 'https://es.wikipedia.org/' },
+  { code: 'pt', wiki: 'https://pt.wikipedia.org/' },
 ];
 
 const BATCH_SIZE = 100; // VALUES lists this size run in well under 200ms on QLever (tested); bigger batches means fewer requests, which matters more than batch size for staying under a public endpoint's rate limit
@@ -698,11 +699,43 @@ ${taxonbar}
 <!-- iNaturalist・GBIF・Wikidataのデータから自動生成した下書きです。公開前に内容と適切なスタブテンプレートを確認してください。 -->`;
 }
 
+function buildStubPt(t, ctx) {
+  const { ranks, parent, gbif } = ctx;
+  const authority = (gbif && gbif.authorship) || '';
+  const infoFields = [
+    ['nome', t.commonName || t.name],
+    ['imagem', commonsImageFilename(t)],
+    ['reino', ranks.kingdom || ''],
+    ['filo', ranks.phylum || ''],
+    ['classe', ranks.class || ''],
+    ['ordem', ranks.order || ''],
+    ['família', ranks.family || ''],
+    ['género', ranks.genus || ''],
+    ['espécie', t.name],
+    ['binomial', t.name],
+    ['binomial_autoridade', authority],
+  ].map(([k, v]) => `| ${k} = ${v}`).join('\n');
+  const taxonbar = t.wikidata ? `\n{{Taxonbar|from=${t.wikidata.qid}}}` : '';
+
+  return `{{Info/Taxonomia
+${infoFields}
+}}
+
+'''''${t.name}'''''${t.commonName ? `, conhecida popularmente como '''${t.commonName}'''` : ''} é uma espécie de ${t.rank} pertencente a ${parent ? parent.name : (ranks.family || '')}.<ref>{{citar web |título=${t.name} |url=${inatTaxonUrl(t)} |site=iNaturalist |acessodata=${todayISO()} |idioma=en}}</ref>
+
+== Referências ==
+{{reflist}}
+${taxonbar}
+{{esboço-biologia}}
+<!-- RASCUNHO gerado a partir de dados do iNaturalist, GBIF e Wikidata — revise antes de publicar. Verifique se o modelo de esboço é o mais adequado. -->`;
+}
+
 async function buildStub(t, lang) {
   const ctx = await ensureStubContext(t);
   if (lang === 'en') return buildStubEn(t, ctx);
   if (lang === 'es') return buildStubEs(t, ctx);
   if (lang === 'ja') return buildStubJa(t, ctx);
+  if (lang === 'pt') return buildStubPt(t, ctx);
   throw new Error(`No stub template for language "${lang}"`);
 }
 
@@ -1120,6 +1153,11 @@ const filtersEl = document.getElementById('filters');
 const tableWrapEl = document.getElementById('tableWrap');
 const tbody = document.getElementById('taxaBody');
 const identityPanelEl = document.getElementById('identityPanel');
+const bulkActionsEl = document.getElementById('bulkActions');
+const bulkInatIdBtn = document.getElementById('bulkInatIdBtn');
+const bulkInatIdBox = document.getElementById('bulkInatIdBox');
+const bulkInatIdTextarea = document.getElementById('bulkInatIdTextarea');
+const bulkInatIdCopyBtn = document.getElementById('bulkInatIdCopyBtn');
 
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
@@ -1156,6 +1194,16 @@ function sanitizeLogMessage(msg) {
   }
   // Fallback for any other URL not in the known list.
   cleaned = cleaned.replace(/(https?:\/\/[^\s")]+?)\?[^\s")]*/g, '$1');
+  // A proxy in front of an endpoint can return its own HTML error page (a gateway's
+  // "502 Bad Gateway", say) instead of JSON — Comunica surfaces that whole page as the
+  // error message. Collapse it to just its own title/heading rather than dumping the
+  // markup; works even when the message got cut off mid-tag before reaching here.
+  const htmlMatch = cleaned.match(/<html[\s\S]*/i);
+  if (htmlMatch) {
+    const titleMatch = htmlMatch[0].match(/<title>([\s\S]*?)<\/title>/i) || htmlMatch[0].match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    const label = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : 'HTML error page';
+    cleaned = cleaned.slice(0, htmlMatch.index) + `[${label}]`;
+  }
   const collapsed = cleaned.replace(/\s+/g, ' ').trim();
   const MAX = 240;
   return collapsed.length > MAX ? collapsed.slice(0, MAX) + '… (truncated)' : collapsed;
@@ -1184,10 +1232,17 @@ function inatIdLinked(t) {
   return !!(t.wikidata && t.wikidata.inat != null && String(t.wikidata.inat) === String(t.inatId));
 }
 
+// Matched item, no P3151 conflict on it, but not yet linked to THIS taxon's id — the
+// safe-to-bulk-add case. Excludes the conflict case on purpose: adding a third value to
+// an item that already has two is how you get more mess, not less.
+function inatIdMissing(t) {
+  return !!t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t);
+}
+
 function matchesFilter(t) {
   if (currentFilter === 'all') return true;
   if (currentFilter === 'unresolved') return !t.wikidata;
-  if (currentFilter === 'inat-id-missing') return !!t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t);
+  if (currentFilter === 'inat-id-missing') return inatIdMissing(t);
   if (currentFilter === 'inat-id-conflict') return !!t.wikidataInatIdConflict;
   const missing = taxonMissingCount(t);
   if (missing === null) return false;
@@ -1210,7 +1265,7 @@ function langBadge(t, code) {
 function renderImageCell(t) {
   const p = t.obsPhoto;
   if (!p) return '<span class="pill">no photo</span>';
-  const thumb = `<img class="thumb" src="${p.squareUrl}" alt="">`;
+  const thumb = `<img class="thumb" src="${p.squareUrl}" alt="" title="Photo from an observation in this run — this is what a Commons upload below would use">`;
   let status;
   if (!COMMONS_COMPATIBLE_LICENSES[p.licenseCode]) {
     const label = p.licenseCode ? p.licenseCode.toUpperCase() : 'all rights reserved';
@@ -1228,7 +1283,19 @@ function renderTable() {
   const rows = currentTaxa.filter(matchesFilter);
   for (const t of rows) {
     const tr = document.createElement('tr');
-    const photo = t.photo ? `<img class="thumb" src="${t.photo}" alt="">` : `<div class="thumb"></div>`;
+    // Prefer the real photo from an observation in THIS run's own scope — the same one
+    // the Image column and any Commons upload use — over iNaturalist's taxon-wide
+    // "default photo" (picked from any observer, anywhere, unrelated to this project or
+    // user). Showing the taxon-wide photo here while the Image column shows a different,
+    // scope-verified one is confusing at best and, next to "prepare upload", looks like
+    // the wrong photo might be getting uploaded. Only fall back to it, clearly labelled,
+    // when this run found no photo of its own for the taxon at all.
+    const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
+    const photoUrl = usingObsPhoto ? t.obsPhoto.squareUrl : t.photo;
+    const photoTitle = usingObsPhoto
+      ? 'Photo from an observation in this run'
+      : (t.photo ? "iNaturalist's general default photo for this taxon — no photo found on any observation in this run" : '');
+    const photo = photoUrl ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">` : `<div class="thumb"></div>`;
     const wdLink = t.wikidata
       ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
       : '';
@@ -1266,6 +1333,7 @@ function renderTable() {
       <td>${langBadge(t, 'en')}</td>
       <td>${langBadge(t, 'ja')}</td>
       <td>${langBadge(t, 'es')}</td>
+      <td>${langBadge(t, 'pt')}</td>
       <td>${plazi}</td>
       <td><button class="small-btn bhl-btn" data-taxon="${encodeURIComponent(t.name)}">look up</button></td>
     `;
@@ -1292,18 +1360,18 @@ tbody.addEventListener('click', async (e) => {
     bhlRow = document.createElement('tr');
     bhlRow.className = 'bhl-row';
     if (results.length === 0) {
-      bhlRow.innerHTML = `<td></td><td colspan="11">No BHL literature found for <em>${name}</em> in this experimental knowledge graph (koetai.semscape.org) — it may simply not be indexed yet.</td>`;
+      bhlRow.innerHTML = `<td></td><td colspan="12">No BHL literature found for <em>${name}</em> in this experimental knowledge graph (koetai.semscape.org) — it may simply not be indexed yet.</td>`;
     } else {
       const items = results.map(r =>
         `<li>${r.date ? `<strong>${r.date}</strong> — ` : ''}${r.title}${r.containerTitle ? ` <em>(${r.containerTitle})</em>` : ''} ${r.part ? `<a href="${r.part}" target="_blank" rel="noopener">↗</a>` : ''}</li>`
       ).join('');
-      bhlRow.innerHTML = `<td></td><td colspan="11">BHL literature mentioning <em>${name}</em> (federated query: BHL graph → Wikidata via QLever → Wikipedia via WDQS):<ul>${items}</ul></td>`;
+      bhlRow.innerHTML = `<td></td><td colspan="12">BHL literature mentioning <em>${name}</em> (federated query: BHL graph → Wikidata via QLever → Wikipedia via WDQS):<ul>${items}</ul></td>`;
     }
     row.after(bhlRow);
   } catch (err) {
     bhlRow = document.createElement('tr');
     bhlRow.className = 'bhl-row';
-    bhlRow.innerHTML = `<td></td><td colspan="11">BHL lookup failed: ${err.message}</td>`;
+    bhlRow.innerHTML = `<td></td><td colspan="12">BHL lookup failed: ${err.message}</td>`;
     row.after(bhlRow);
   } finally {
     btn.disabled = false;
@@ -1337,12 +1405,12 @@ tbody.addEventListener('click', async (e) => {
       const doiLink = r.doi ? ` <a href="${r.doi}" target="_blank" rel="noopener">↗</a>` : '';
       return `<li>${title}${r.creator ? ` <em>(${r.creator})</em>` : ''}${doiLink}</li>`;
     }).join('');
-    plaziRow.innerHTML = `<td></td><td colspan="11">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul></td>`;
+    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul></td>`;
     row.after(plaziRow);
   } catch (err) {
     plaziRow = document.createElement('tr');
     plaziRow.className = 'bhl-row plazi-row';
-    plaziRow.innerHTML = `<td></td><td colspan="11">Plazi lookup failed: ${err.message}</td>`;
+    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi lookup failed: ${err.message}</td>`;
     row.after(plaziRow);
   } finally {
     btn.disabled = false;
@@ -1373,7 +1441,7 @@ tbody.addEventListener('click', async (e) => {
     const box = document.createElement('tr');
     box.className = 'bhl-row stub-row';
     const rowId = `stub-${inatId}-${lang}-${Date.now()}`;
-    box.innerHTML = `<td></td><td colspan="11">
+    box.innerHTML = `<td></td><td colspan="12">
       Draft ${lang} Wikipedia stub for <em>${t.name}</em> — generated from iNaturalist + GBIF + Wikidata,
       similar to <a href="https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker" target="_blank" rel="noopener">taxonname-wpstubmaker</a>.
       Review before publishing.
@@ -1387,7 +1455,7 @@ tbody.addEventListener('click', async (e) => {
   } catch (err) {
     const box = document.createElement('tr');
     box.className = 'bhl-row stub-row';
-    box.innerHTML = `<td></td><td colspan="11">Could not draft a stub: ${err.message}</td>`;
+    box.innerHTML = `<td></td><td colspan="12">Could not draft a stub: ${err.message}</td>`;
     row.after(box);
   } finally {
     btn.disabled = false;
@@ -1417,7 +1485,7 @@ tbody.addEventListener('click', (e) => {
   const host = new URL(t.obsPhoto.originalUrl).hostname;
   const box = document.createElement('tr');
   box.className = 'bhl-row upload-row';
-  box.innerHTML = `<td></td><td colspan="11">
+  box.innerHTML = `<td></td><td colspan="12">
     Commons upload for <em>${t.name}</em> (${t.obsPhoto.licenseCode.toUpperCase()}, by ${t.obsPhoto.observerLogin} on iNaturalist)
     — source host <code>${host}</code> <span id="${domainId}">· checking Commons' upload allow-list…</span>
     <div class="stub-toolbar">
@@ -1470,7 +1538,7 @@ tbody.addEventListener('click', async (e) => {
     const rowId = `qs-${inatId}-${Date.now()}`;
     const box = document.createElement('tr');
     box.className = 'bhl-row qs-row';
-    box.innerHTML = `<td></td><td colspan="11">
+    box.innerHTML = `<td></td><td colspan="12">
       Proposed QuickStatements to create a Wikidata item for <em>${t.name}</em> — assembled from
       iNaturalist (rank, ancestor chain, taxon id), GBIF (backbone taxon id${ctx.gbifMatch && ctx.gbifMatch.usageKey ? `: ${ctx.gbifMatch.usageKey}, ${ctx.gbifMatch.matchType} match` : ': no confident match found'})
       and NCBI Taxonomy (taxid${ctx.ncbiTaxonId ? `: ${ctx.ncbiTaxonId}` : ': no unambiguous match found'}).
@@ -1486,7 +1554,7 @@ tbody.addEventListener('click', async (e) => {
   } catch (err) {
     const box = document.createElement('tr');
     box.className = 'bhl-row qs-row';
-    box.innerHTML = `<td></td><td colspan="11">Could not build QuickStatements: ${err.message}</td>`;
+    box.innerHTML = `<td></td><td colspan="12">Could not build QuickStatements: ${err.message}</td>`;
     row.after(box);
   } finally {
     btn.disabled = false;
@@ -1512,7 +1580,7 @@ tbody.addEventListener('click', (e) => {
   const rowId = `inatlink-${inatId}-${Date.now()}`;
   const box = document.createElement('tr');
   box.className = 'bhl-row qs-row';
-  box.innerHTML = `<td></td><td colspan="11">
+  box.innerHTML = `<td></td><td colspan="12">
     Proposed QuickStatements to add the iNaturalist taxon id to the existing item
     <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a> for <em>${t.name}</em>.
     <div class="stub-toolbar">
@@ -1535,6 +1603,25 @@ tbody.addEventListener('click', (e) => {
     setTimeout(() => { btn.textContent = original; }, 1500);
   }).catch(() => {
     ta.select();
+  });
+});
+
+bulkInatIdBtn.addEventListener('click', () => {
+  if (!bulkInatIdBox.hidden) {
+    bulkInatIdBox.hidden = true;
+    return;
+  }
+  bulkInatIdTextarea.value = buildBulkInatIdLinkQS(currentTaxa.filter(inatIdMissing));
+  bulkInatIdBox.hidden = false;
+});
+
+bulkInatIdCopyBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(bulkInatIdTextarea.value).then(() => {
+    const original = bulkInatIdCopyBtn.textContent;
+    bulkInatIdCopyBtn.textContent = 'Copied!';
+    setTimeout(() => { bulkInatIdCopyBtn.textContent = original; }, 1500);
+  }).catch(() => {
+    bulkInatIdTextarea.select();
   });
 });
 
@@ -1666,15 +1753,34 @@ function updateStats() {
   const resolved = currentTaxa.filter(t => t.wikidata).length;
   const missingAny = currentTaxa.filter(t => taxonMissingCount(t) > 0).length;
   const missingAll = currentTaxa.filter(t => taxonMissingCount(t) === LANGS.length).length;
-  const inatIdMissing = currentTaxa.filter(t => t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t)).length;
+  const inatIdMissingCount = currentTaxa.filter(inatIdMissing).length;
   const inatIdConflict = currentTaxa.filter(t => t.wikidataInatIdConflict).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
   document.getElementById('statMissingAny').textContent = missingAny;
   document.getElementById('statMissingAll').textContent = missingAll;
-  document.getElementById('statInatIdMissing').textContent = inatIdMissing;
+  document.getElementById('statInatIdMissing').textContent = inatIdMissingCount;
   document.getElementById('statInatIdConflict').textContent = inatIdConflict;
   statsEl.hidden = false;
+  updateBulkInatIdAction(inatIdMissingCount);
+}
+
+// Collects every taxon still missing its iNaturalist id link into one QuickStatements
+// batch, so a large project's worth of one-line fixes doesn't mean clicking "link iNat
+// ID" dozens of times — each is still a fully independent statement line, so the batch
+// is just those lines concatenated.
+function buildBulkInatIdLinkQS(taxa) {
+  return taxa.map(buildInatIdLinkQS).join('\n');
+}
+
+function updateBulkInatIdAction(count) {
+  bulkInatIdBox.hidden = true;
+  if (!count) {
+    bulkActionsEl.hidden = true;
+    return;
+  }
+  bulkActionsEl.hidden = false;
+  bulkInatIdBtn.textContent = `Propose QuickStatements — link all ${count} missing iNat ID${count === 1 ? '' : 's'}`;
 }
 
 async function run() {
@@ -1690,6 +1796,8 @@ async function run() {
   filtersEl.hidden = true;
   tableWrapEl.hidden = true;
   identityPanelEl.hidden = true;
+  bulkActionsEl.hidden = true;
+  bulkInatIdBox.hidden = true;
   identityState = null;
   currentTaxa = [];
 
@@ -1707,7 +1815,7 @@ async function run() {
     setStatusHeader(`Resolving ${taxa.length} taxa against Wikidata (via Comunica → QLever)…`);
     await resolveWikidata(taxa);
 
-    setStatusHeader(`Checking Wikipedia (en/ja/es) sitelinks (via Comunica → WDQS)…`);
+    setStatusHeader(`Checking Wikipedia (en/ja/es/pt) sitelinks (via Comunica → WDQS)…`);
     await resolveSitelinks(taxa);
 
     setStatusHeader(`Checking Plazi TreatmentBank (via Comunica → QLever)…`);
