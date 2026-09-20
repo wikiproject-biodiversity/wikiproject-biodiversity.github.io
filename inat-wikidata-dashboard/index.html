@@ -52,6 +52,7 @@
   <div class="stat warn"><span id="statMissingAny">0</span><label>missing ≥1 Wikipedia</label></div>
   <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es</label></div>
   <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
+  <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
 </section>
 
 <section id="filters" class="filters" hidden>
@@ -60,6 +61,7 @@
   <button class="filter-btn" data-filter="missing-all">Missing all 3</button>
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
   <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
+  <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
 </section>
 
 <section id="tableWrap" class="table-wrap" hidden>
@@ -114,7 +116,13 @@
           <code>P3151</code> back to this exact iNaturalist taxon. That case gets its own
           <span class="pill" style="display:inline">⚠ no iNat ID</span> marker in the Wikidata
           column, a "link iNat ID" one-line QuickStatements action, and its own stat card and filter,
-          separate from the Wikipedia-coverage numbers below.
+          separate from the Wikipedia-coverage numbers below. The opposite problem — an item
+          carrying <em>two or more</em> different <code>P3151</code> values, e.g. an old iNaturalist
+          taxon id left behind after a merge/split — gets its own
+          <span class="pill" style="display:inline">⚠ N iNat IDs — needs review</span> marker, stat
+          and filter too, but no automated fix: this tool only ever proposes additions, and deciding
+          which existing statement is the stale one to remove needs a curator checking iNaturalist
+          directly, not a guess.
         </li>
         <li>
           <strong>Same QLever-first, WDQS-fallback pattern for sitelinks</strong> — checks, for
