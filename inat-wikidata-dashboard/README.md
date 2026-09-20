@@ -86,6 +86,10 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    iNaturalist carry a `P7482` ("source of file") statement whose `P973` ("described at URL")
    qualifier is the `inaturalist.org/photos/<id>` page, which is the join key. Already-uploaded
    files are linked directly and their filename fills the stub draft's infobox image.
+   `schema:contentUrl` values from this endpoint sometimes carry a tracking query string
+   (`?utm_source=commons.wikimedia.org&…`) after the real filename — `commonsFilenameFromUrl()`
+   strips it before use; missing that produced a broken file link (found live, while building
+   the image picker below, and fixed everywhere in this file that parses a `contentUrl`).
 7. **Upload to Commons (on demand)** — for a compatible, not-yet-uploaded photo, opens a
    pre-filled `Special:Upload` form using upload-by-URL: `wpUploadFileURL` set to the iNaturalist
    photo, `wpLicense`/`wpDestFile`/`wpUploadDescription` pre-filled from the same data as the
@@ -124,6 +128,16 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
      compare), but a rank where two-plus sources genuinely differ — a real, fairly common
      occurrence between these three databases — is called out by name in its own
      paragraph instead of the stub silently picking one and hiding the discrepancy.
+   - **An infobox image**, sourced from images already on Wikidata (`wdt:P18`) or Commons
+     (structured-data "depicts", `wdt:P180`, pointing at the taxon's QID) via
+     `fetchCandidateImages()` — an alternative to the observation-photo upload flow for a
+     taxon that's already well documented, where re-uploading a duplicate would be pointless.
+     Picking one, on the curation page's image selector panel, is what
+     `commonsImageFilename()` checks first, ahead of a matched observation upload.
+   - **A "first described by" sentence**, when GBIF's `authorship` field parses cleanly as
+     `Author, Year` (`parseAuthority()`) — cited to GBIF's own `publishedIn` (the original
+     describing publication) when available, since that's the actual source for this specific
+     claim, not the generic lead sentence it used to be attached to.
 9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
    null`), click "propose QuickStatements" to draft a
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
