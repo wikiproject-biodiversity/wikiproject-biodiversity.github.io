@@ -464,8 +464,7 @@ SELECT ?url ?file ?contentUrl WHERE {
 }`;
     const rows = await sparqlViaComunica(query, COMMONS_ENDPOINT, { silent: true });
     for (const r of rows) {
-      // schema:contentUrl looks like https://upload.wikimedia.org/wikipedia/commons/1/1b/Filename.jpg
-      const filename = decodeURIComponent(r.contentUrl.split('/').pop());
+      const filename = commonsFilenameFromUrl(r.contentUrl);
       existing.set(r.url, { entity: r.file, pageUrl: `https://commons.wikimedia.org/wiki/File:${filename}` });
     }
     return rows.length;
@@ -672,8 +671,64 @@ function todayISO() { return new Date().toISOString().slice(0, 10); }
 // The bare "Filename.jpg" for a taxon's photo, if it's already on Commons
 // (either matched by resolveCommonsStatus, or freshly prepared this session).
 function commonsImageFilename(t) {
+  // A curator's explicit pick (from the curation page's image selector, sourced from
+  // images already on Wikidata/Commons for this taxon) wins over this run's own
+  // observation photo — that photo may not even be uploaded yet, while a selected image
+  // is already live and license-cleared.
+  if (t._selectedImage) return t._selectedImage;
   const pageUrl = t.obsPhoto && t.obsPhoto.commonsFile && t.obsPhoto.commonsFile.pageUrl;
   return pageUrl ? decodeURIComponent(pageUrl.split('File:').pop()) : '';
+}
+
+function commonsThumbUrl(filename, width = 150) {
+  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(filename)}?width=${width}`;
+}
+
+// Commons' schema:contentUrl sometimes carries tracking query params
+// (?utm_source=commons.wikimedia.org&…) appended after the real filename — found live,
+// via QLever's wikimedia-commons mirror, while building the image picker below. Strip
+// them before treating whatever follows the last "/" as the actual filename; every place
+// in this file that turns a contentUrl into a filename goes through this.
+function commonsFilenameFromUrl(url) {
+  return decodeURIComponent(url.split('/').pop().split('?')[0]);
+}
+
+// Existing images already on Wikidata (direct P18) or Commons (structured-data "depicts"
+// pointing at this taxon's QID) — an alternative to the observation-photo upload flow for
+// populating a stub's infobox image, since a taxon that's been on Wikidata for a while
+// often already has a properly licensed, curated image nobody needs to re-upload.
+async function fetchCandidateImages(t) {
+  if (!t.wikidata) return [];
+  const images = [];
+  try {
+    const rows = await sparqlViaComunica(
+      `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?image WHERE { wd:${t.wikidata.qid} wdt:P18 ?image }`,
+      QLEVER_ENDPOINT, { silent: true });
+    for (const r of rows) {
+      images.push({ filename: commonsFilenameFromUrl(r.image), source: 'Wikidata' });
+    }
+  } catch (e) { log(`Wikidata image lookup failed: ${e.message}`, 'warn'); }
+  try {
+    const rows = await sparqlViaComunica(
+      `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX schema: <http://schema.org/>
+SELECT ?contentUrl WHERE { ?file wdt:P180 wd:${t.wikidata.qid} ; schema:contentUrl ?contentUrl } LIMIT 12`,
+      COMMONS_ENDPOINT, { silent: true });
+    for (const r of rows) {
+      const filename = commonsFilenameFromUrl(r.contentUrl);
+      if (!images.some(i => i.filename === filename)) images.push({ filename, source: 'Commons' });
+    }
+  } catch (e) { log(`Commons depicts lookup failed: ${e.message}`, 'warn'); }
+  return images;
+}
+
+async function ensureCandidateImages(t) {
+  if (t._candidateImages) return t._candidateImages;
+  t._candidateImages = await fetchCandidateImages(t);
+  return t._candidateImages;
 }
 
 // iNaturalist is user-generated/crowdsourced content and isn't a reliable source under
@@ -698,6 +753,36 @@ function leadCitationWikitext(lang, citation) {
     return `<ref>{{citar web |título=${citation.title}${citation.containerTitle ? ` |site=${citation.containerTitle}` : ''}${citation.date ? ` |data=${citation.date}` : ''} |url=${citation.url} |acessodata=${accessDate}}}</ref>`;
   }
   return `<ref>{{cite web |title=${citation.title}${citation.containerTitle ? ` |website=${citation.containerTitle}` : ''}${citation.date ? ` |date=${citation.date}` : ''} |url=${citation.url} |access-date=${accessDate}}}</ref>`;
+}
+
+// GBIF's `authorship` field is normally just "Author, Year" (parens around it mean the
+// species has since been moved to a different genus than the one it was described in —
+// standard zoological/botanical nomenclature convention, not something to strip). Split
+// name from year for the "first described by" sentence; anything that doesn't match this
+// shape (multiple authors joined oddly, "ex" formulas, etc.) is left alone rather than
+// forcing a sentence that might misparse it.
+function parseAuthority(authority) {
+  if (!authority) return null;
+  const m = String(authority).trim().match(/^\(?\s*([^(),]+?)\s*,\s*(\d{4})\s*\)?$/);
+  return m ? { author: m[1].trim(), year: m[2] } : null;
+}
+
+const DESCRIBED_BY_I18N = {
+  en: (a, y) => ` It was first described by ${a} in ${y}.`,
+  es: (a, y) => ` Fue descrita por primera vez por ${a} en ${y}.`,
+  ja: (a, y) => ` ${a}によって${y}年に初めて記載された。`,
+  pt: (a, y) => ` Foi descrita pela primeira vez por ${a} em ${y}.`,
+};
+
+// GBIF's own `publishedIn` (the original describing publication) is the actual citation
+// for THIS claim specifically — more so than the generic lead sentence it used to be
+// attached to, since it's literally the record of that description.
+function describedByWikitext(gbif, lang) {
+  const parsed = gbif && parseAuthority(gbif.authorship);
+  if (!parsed) return '';
+  const sentence = (DESCRIBED_BY_I18N[lang] || DESCRIBED_BY_I18N.en)(parsed.author, parsed.year);
+  const ref = gbif.publishedIn ? `<ref>${gbif.publishedIn}</ref>` : '';
+  return sentence + ref;
 }
 
 // Per-language phrasing for the taxonomy cross-check section — kept as small a set of
@@ -766,7 +851,6 @@ function taxonomyWikitext(ctx, lang) {
 function buildStubEn(t, ctx, citation) {
   const { ranks, parent, gbif } = ctx;
   const authority = (gbif && gbif.authorship) || (ranks.species ? '' : '');
-  const publishedInRef = gbif && gbif.publishedIn ? `<ref>${gbif.publishedIn}</ref>` : '';
   const exordium = t.commonName
     ? `'''''${t.name}''''', also known by its common name '''${t.commonName}'''`
     : `'''''${t.name}'''''`;
@@ -781,7 +865,7 @@ function buildStubEn(t, ctx, citation) {
 | authority = ${authority}
 }}
 
-${exordium} is a [[${t.rank}]] from the [[${parent ? parent.rank : ''}]] ''[[${parentName}]]''. ${publishedInRef}${leadCitationWikitext('en', citation)}${taxonomyWikitext(ctx, 'en')}
+${exordium} is a [[${t.rank}]] from the [[${parent ? parent.rank : ''}]] ''[[${parentName}]]''. ${leadCitationWikitext('en', citation)}${describedByWikitext(gbif, 'en')}${taxonomyWikitext(ctx, 'en')}
 
 ==References==
 {{Reflist}}
@@ -811,7 +895,7 @@ function buildStubEs(t, ctx, citation) {
 ${fichaFields}
 }}
 
-'''''${t.name}'''''${t.commonName ? ` es el nombre científico de '''${t.commonName}'''` : ''}, una especie de ${t.rank} perteneciente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('es', citation)}${taxonomyWikitext(ctx, 'es')}
+'''''${t.name}'''''${t.commonName ? ` es el nombre científico de '''${t.commonName}'''` : ''}, una especie de ${t.rank} perteneciente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('es', citation)}${describedByWikitext(gbif, 'es')}${taxonomyWikitext(ctx, 'es')}
 
 == Referencias ==
 {{listaref}}
@@ -841,7 +925,7 @@ function buildStubJa(t, ctx, citation) {
 ${bunruiFields}
 }}
 
-'''${t.name}'''${t.commonName ? `（${t.commonName}）` : ''}は、${parent ? parent.name : (ranks.family || '')}に属する${t.rank}の一種である。${leadCitationWikitext('ja', citation)}${taxonomyWikitext(ctx, 'ja')}
+'''${t.name}'''${t.commonName ? `（${t.commonName}）` : ''}は、${parent ? parent.name : (ranks.family || '')}に属する${t.rank}の一種である。${leadCitationWikitext('ja', citation)}${describedByWikitext(gbif, 'ja')}${taxonomyWikitext(ctx, 'ja')}
 
 == 脚注 ==
 {{Reflist}}
@@ -871,7 +955,7 @@ function buildStubPt(t, ctx, citation) {
 ${infoFields}
 }}
 
-'''''${t.name}'''''${t.commonName ? `, conhecida popularmente como '''${t.commonName}'''` : ''} é uma espécie de ${t.rank} pertencente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('pt', citation)}${taxonomyWikitext(ctx, 'pt')}
+'''''${t.name}'''''${t.commonName ? `, conhecida popularmente como '''${t.commonName}'''` : ''} é uma espécie de ${t.rank} pertencente a ${parent ? parent.name : (ranks.family || '')}. ${leadCitationWikitext('pt', citation)}${describedByWikitext(gbif, 'pt')}${taxonomyWikitext(ctx, 'pt')}
 
 == Referências ==
 {{reflist}}
@@ -1608,10 +1692,17 @@ async function renderTaxonDetail(t) {
   // Wikipedia: one auto-drafted stub per still-missing language, all at once. Each
   // stub's lead sentence starts with no citation ({{citation needed}}) — iNaturalist
   // itself isn't a reliable source to cite — so fetch this taxon's BHL literature once,
-  // up front, and let the picker on each language panel swap in a real one.
+  // up front, and let the picker on each language panel swap in a real one. Both this and
+  // the candidate-image lookup below are cached on `t` (not re-fetched) so that picking
+  // an image — which re-renders this whole page — doesn't repeat either query.
   const needsWikipedia = LANGS.some(l => t.wikidata && (!t.wikipedia || !t.wikipedia[l.code]));
   if (needsWikipedia) {
-    try { t._bhlResults = await fetchBHL(t.name); } catch (e) { t._bhlResults = []; }
+    if (!t._bhlResults) {
+      try { t._bhlResults = await fetchBHL(t.name); } catch (e) { t._bhlResults = []; }
+    }
+    const images = await ensureCandidateImages(t).catch(() => []);
+    const panel = imageSelectorPanel(t, images);
+    if (panel) panels.push(panel);
   }
   for (const l of LANGS) {
     if (t.wikidata && t.wikipedia && t.wikipedia[l.code]) continue; // already has an article
@@ -1654,6 +1745,42 @@ function taxonActionPanel(title, bodyHtml, textareaContent, { showQsLink = false
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// One image picker feeds every drafted stub's infobox (not per-language — the same
+// photo applies to all of them), sourced from images already on Wikidata/Commons for
+// this taxon rather than only this run's own observation photo. Picking one re-renders
+// the whole curation page (renderTaxonDetail) so every stub panel below picks it up via
+// commonsImageFilename(); returns '' when there's nothing to pick from.
+function imageSelectorPanel(t, images) {
+  if (!images.length) return '';
+  const thumbs = images.map(img => {
+    const selected = t._selectedImage === img.filename;
+    return `<button class="image-pick-btn${selected ? ' selected' : ''}" data-inat-id="${t.inatId}" data-filename="${escapeHtml(img.filename)}" title="${escapeHtml(img.filename)} — ${img.source}">
+      <img src="${commonsThumbUrl(img.filename)}" alt="${escapeHtml(img.filename)}">
+    </button>`;
+  }).join('');
+  const clearBtn = t._selectedImage
+    ? `<button class="small-btn image-pick-clear" data-inat-id="${t.inatId}">Clear selection</button>`
+    : '';
+  return `<div class="identity-panel taxon-action-panel">
+    <h3>Infobox image</h3>
+    <div>Existing images already on Wikidata or Commons for this taxon — pick one to use as the
+      infobox image in every stub drafted below.${t._selectedImage ? ` Currently using <code>${escapeHtml(t._selectedImage)}</code>.` : ' None selected — stubs fall back to this run\'s own uploaded observation photo, if any.'}
+    </div>
+    <div class="image-picker">${thumbs}</div>
+    ${clearBtn}
+  </div>`;
+}
+
+document.addEventListener('click', async (e) => {
+  const pickBtn = e.target.closest('.image-pick-btn');
+  const clearBtn = e.target.closest('.image-pick-clear');
+  if (!pickBtn && !clearBtn) return;
+  const t = currentTaxa.find(x => x.inatId === Number((pickBtn || clearBtn).dataset.inatId));
+  if (!t) return;
+  t._selectedImage = pickBtn ? pickBtn.dataset.filename : null;
+  await renderTaxonDetail(t);
+});
 
 // A Wikipedia stub panel gets its own renderer (rather than going through
 // taxonActionPanel) because it needs a live control the generic panel doesn't: a picker
