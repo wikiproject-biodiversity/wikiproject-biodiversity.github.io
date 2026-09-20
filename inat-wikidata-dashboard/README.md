@@ -161,6 +161,18 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
       item (`mode: 'create'` — `P31 Q5` human / `Q24577212` citizen science project). A new-human
       draft carries an explicit notability caution in its UI label: contributing to iNaturalist
       does not by itself make a person notable enough for a standalone Wikidata item.
+11. **Per-taxon curation page** — click a taxon's name (in the table, or via
+    `#taxon=<inatId>` directly — a real, bookmarkable URL hash) to open a single-taxon
+    view with every outstanding action for it already built and shown, not click-to-reveal
+    like the table (`renderTaxonDetail()`). Whichever single Wikidata action applies —
+    propose a `CREATE`, add a missing `P3151`, or the iNat-id-conflict breakdown — and a
+    drafted stub for every still-missing Wikipedia language render immediately. The same
+    row markup and the same delegated click handlers back both the table and this page
+    (`buildTaxonRowCells()`; the handlers moved from `tbody`- to `document`-scoped clicks
+    so they fire identically in either place) — no logic is duplicated between them.
+    Resolving the hash still needs this run's own `currentTaxa` in memory (no backend to
+    look a bare taxon id up against without a project/user already loaded), so a bookmarked
+    link only resolves after loading a scope that actually contains that taxon.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
