@@ -1701,8 +1701,7 @@ async function renderTaxonDetail(t) {
       try { t._bhlResults = await fetchBHL(t.name); } catch (e) { t._bhlResults = []; }
     }
     const images = await ensureCandidateImages(t).catch(() => []);
-    const panel = imageSelectorPanel(t, images);
-    if (panel) panels.push(panel);
+    panels.push(imageSelectorPanel(t, images));
   }
   for (const l of LANGS) {
     if (t.wikidata && t.wikipedia && t.wikipedia[l.code]) continue; // already has an article
@@ -1751,8 +1750,21 @@ function escapeHtml(s) {
 // this taxon rather than only this run's own observation photo. Picking one re-renders
 // the whole curation page (renderTaxonDetail) so every stub panel below picks it up via
 // commonsImageFilename(); returns '' when there's nothing to pick from.
+// Always rendered (not only when candidates exist) — same reasoning as the BHL picker's
+// "no literature found" note: a panel that silently disappears when empty is
+// indistinguishable from one that never ran, which is exactly what made this hard to
+// find in practice. Showing "none found" is what actually confirms the check happened.
 function imageSelectorPanel(t, images) {
-  if (!images.length) return '';
+  const intro = t._selectedImage
+    ? ` Currently using <code>${escapeHtml(t._selectedImage)}</code>.`
+    : " None selected — stubs fall back to this run's own uploaded observation photo, if any.";
+  if (!images.length) {
+    return `<div class="identity-panel taxon-action-panel">
+      <h3>Infobox image</h3>
+      <p class="identity-note">No existing images found on Wikidata or Commons for this taxon
+        (checked Wikidata's <code>P18</code> and Commons' "depicts" statements).${intro}</p>
+    </div>`;
+  }
   const thumbs = images.map(img => {
     const selected = t._selectedImage === img.filename;
     return `<button class="image-pick-btn${selected ? ' selected' : ''}" data-inat-id="${t.inatId}" data-filename="${escapeHtml(img.filename)}" title="${escapeHtml(img.filename)} — ${img.source}">
@@ -1765,7 +1777,7 @@ function imageSelectorPanel(t, images) {
   return `<div class="identity-panel taxon-action-panel">
     <h3>Infobox image</h3>
     <div>Existing images already on Wikidata or Commons for this taxon — pick one to use as the
-      infobox image in every stub drafted below.${t._selectedImage ? ` Currently using <code>${escapeHtml(t._selectedImage)}</code>.` : ' None selected — stubs fall back to this run\'s own uploaded observation photo, if any.'}
+      infobox image in every stub drafted below.${intro}
     </div>
     <div class="image-picker">${thumbs}</div>
     ${clearBtn}
