@@ -335,6 +335,24 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
 
 .stub-toolbar { margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .stub-toolbar-hint { font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 8px; }
+
+.bhl-citation-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.bhl-citation-label select {
+  font-size: 0.8rem;
+  max-width: 320px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
 .upload-btn { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 
 .stub-textarea {
