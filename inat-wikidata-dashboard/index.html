@@ -101,6 +101,17 @@
   </table>
 </section>
 
+<section id="taxonDetail" class="taxon-detail" hidden>
+  <button id="taxonDetailBack" class="small-btn">← Back to results</button>
+  <div id="taxonDetailHeader" class="taxon-detail-header"></div>
+  <div class="table-wrap">
+    <table>
+      <tbody><tr id="taxonDetailRow"></tr></tbody>
+    </table>
+  </div>
+  <div id="taxonDetailActions" class="taxon-detail-actions"></div>
+</section>
+
 <section class="about">
   <details>
     <summary>How this works — the semantic web plumbing</summary>
@@ -245,6 +256,14 @@
           Either way you get a QuickStatements draft: add the identifier to a candidate that turned
           up, or create a new item outright. New-human-item drafts carry an explicit notability
           warning — being an iNaturalist contributor alone doesn't make someone notable on Wikidata.
+        </li>
+        <li>
+          <strong>Per-taxon curation page</strong> — click a taxon's name to open a single-taxon view
+          (a real, bookmarkable <code>#taxon=&lt;id&gt;</code> URL) with everything outstanding for
+          it already shown — no click-to-reveal, unlike the table. Whichever Wikidata action applies
+          and a drafted stub for every still-missing language render immediately, ready to review and
+          copy. Same underlying data and actions as the table row, just laid out for working one
+          taxon at a time instead of scanning many at once.
         </li>
         <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
