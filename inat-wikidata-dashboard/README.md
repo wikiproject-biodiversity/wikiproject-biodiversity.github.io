@@ -102,10 +102,28 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
    it fetches the taxon's ancestor chain from iNaturalist and authorship/publication
    from GBIF, then fills in that language's species infobox (`{{Speciesbox}}` on
    English, `{{Ficha de taxón}}` on Spanish, `{{生物分類表}}` on Japanese,
-   `{{Info/Taxonomia}}` on Portuguese) plus a lead sentence, a reference and
-   `{{Taxonbar}}`. These are **drafts only** — nothing is
-   ever posted to Wikipedia automatically; always review formatting, categories and
-   notability before publishing.
+   `{{Info/Taxonomia}}` on Portuguese) plus a lead sentence and `{{Taxonbar}}`. These are
+   **drafts only** — nothing is ever posted to Wikipedia automatically; always review
+   formatting, categories and notability before publishing.
+   - **The lead sentence is never auto-cited to iNaturalist.** iNaturalist is
+     user-generated/crowdsourced content and isn't accepted as a reliable source under
+     Wikipedia's sourcing policy, so citing it as if it supports a factual claim would be
+     wrong in a way a curator might not catch before publishing. It stays a
+     `{{citation needed}}` marker (`{{cita requerida}}`/`{{要出典}}`/`{{carece de
+     fontes}}` in the other languages) — `{{Taxonbar}}`, sourced from Wikidata, already
+     covers the legitimate "here's the iNaturalist record" cross-reference. On the
+     per-taxon curation page (item 11 below), a picker lets you swap in a real citation
+     from this taxon's BHL literature instead (`leadCitationWikitext()`,
+     `wikipediaStubPanel()`).
+   - **A `==Taxonomy==` section**, built from cross-checking the classification
+     (kingdom–genus) as reported *independently* by iNaturalist, GBIF, and NCBI Taxonomy
+     (`compareTaxonomySources()`) — GBIF via `t.wikidata.gbif` when it's set, else a live
+     name match same as the QuickStatements flow; NCBI via a fresh `esearch` + `esummary`
+     lookup, since only the taxon id was fetched elsewhere in the app, not its lineage.
+     Ranks only one source has an opinion on aren't a disagreement (there's nothing to
+     compare), but a rank where two-plus sources genuinely differ — a real, fairly common
+     occurrence between these three databases — is called out by name in its own
+     paragraph instead of the stub silently picking one and hiding the discrepancy.
 9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
    null`), click "propose QuickStatements" to draft a
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
@@ -166,8 +184,11 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
     view with every outstanding action for it already built and shown, not click-to-reveal
     like the table (`renderTaxonDetail()`). Whichever single Wikidata action applies —
     propose a `CREATE`, add a missing `P3151`, or the iNat-id-conflict breakdown — and a
-    drafted stub for every still-missing Wikipedia language render immediately. The same
-    row markup and the same delegated click handlers back both the table and this page
+    drafted stub for every still-missing Wikipedia language render immediately, each with
+    its own BHL-reference picker (fetched once per taxon, shared across every language's
+    panel) to cite the lead sentence with something Wikipedia actually accepts instead of
+    the default `{{citation needed}}`. The same row markup and the same delegated click
+    handlers back both the table and this page
     (`buildTaxonRowCells()`; the handlers moved from `tbody`- to `document`-scoped clicks
     so they fire identically in either place) — no logic is duplicated between them.
     Resolving the hash still needs this run's own `currentTaxa` in memory (no backend to
