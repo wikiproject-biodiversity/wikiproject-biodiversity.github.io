@@ -200,7 +200,10 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   shared public endpoint responds quickly under someone else's load, or under this
   tool's own cumulative load from a long testing session. Worst case, a step logs its
   failure and moves on with whatever QLever alone already found (see the `catch` blocks
-  in `resolveWikidata`/`resolveSitelinks`) rather than hanging.
+  in `resolveWikidata`/`resolveSitelinks`) rather than hanging. These retry-attempt and
+  fallback-triggered lines log in amber (`log(msg, 'warn')`), not red — they're the tool
+  successfully handling a slow/rate-limited public endpoint, not something broken. Red
+  (`log(msg, 'err')`) is reserved for the run actually aborting.
 - One SPARQL batch per 100 taxa (`BATCH_SIZE` in `app.js`; 25 for WDQS specifically,
   `WDQS_BATCH_SIZE`); fine for hackathon-scale projects and tested against a single
   user's full observation history (~2,200 distinct taxa), but both remain public
