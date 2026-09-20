@@ -344,6 +344,28 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
   color: var(--text-dim);
 }
 
+.image-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.image-pick-btn {
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+  overflow: hidden;
+  width: 72px;
+  height: 72px;
+}
+
+.image-pick-btn img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.image-pick-btn.selected { border-color: var(--accent); }
+.image-pick-btn:hover { filter: brightness(1.05); }
+
 .bhl-citation-label select {
   font-size: 0.8rem;
   max-width: 320px;
