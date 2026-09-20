@@ -225,7 +225,12 @@
           The lead sentence is never cited to iNaturalist — it's user-generated content, not a
           reliable source under Wikipedia's policy — so it stays marked
           <code>{{citation needed}}</code> until you pick a real one from this taxon's BHL
-          literature on its curation page (below). A <code>==Taxonomy==</code> section is also
+          literature on its curation page (below) — or paste your own URL or DOI. For a DOI
+          already on Wikidata, the citation becomes <code>{{cite Q}}</code> (pulled live from
+          that item — the modern, still-maintained replacement for the long-deprecated
+          <code>{{cite doi}}</code>); otherwise Crossref fills in the title/journal/year and a
+          QuickStatements draft to create that publication's own Wikidata item is offered
+          alongside it, never run automatically. A <code>==Taxonomy==</code> section is also
           included, built by cross-checking the classification independently against iNaturalist,
           GBIF and NCBI Taxonomy and calling out any rank where they disagree, rather than quietly
           picking one. The infobox image can also be picked from images already on Wikidata or
@@ -233,6 +238,15 @@
           upload — useful for an already well-documented taxon where uploading a duplicate would
           be pointless. And when GBIF's authorship data parses cleanly, a "first described by"
           sentence is added, cited to GBIF's own record of the original publication.
+          Stub-drafting itself is disabled whenever the Wikidata match isn't trustworthy yet — an
+          ambiguous match, a conflicting or unlinked iNaturalist id — rather than letting a new
+          article get linked to a possibly-wrong item; the curation page explains which and how
+          to fix it. And a taxon isn't called "missing" purely on an exact scientific-name
+          match: iNaturalist's own Wikipedia link is cross-checked too, since Wikidata sometimes
+          models the well-known/common-name article on a separate item from the strict taxon
+          (found live: <em>Bos taurus</em>, matched by name, has zero sitelinks, while its actual,
+          heavily-referenced article lives on the "cattle" item instead) — a match there shows an
+          amber "?", not a false "missing".
         </li>
         <li>
           <strong>Propose QuickStatements (on demand)</strong> — for a taxon with no Wikidata item at
