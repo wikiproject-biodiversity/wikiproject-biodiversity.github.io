@@ -53,6 +53,8 @@
   <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es+pt</label></div>
   <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
   <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
+  <div class="stat warn" id="statSynonymDuplicateCard" hidden><span id="statSynonymDuplicate">0</span><label>multiple WP via synonymy</label></div>
+  <div class="stat danger" id="statWikidataMismatchCard" hidden><span id="statWikidataMismatch">0</span><label>WD classification vs GBIF</label></div>
 </section>
 
 <section id="filters" class="filters" hidden>
@@ -62,6 +64,18 @@
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
   <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
   <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
+  <button class="filter-btn" data-filter="synonym-duplicate" id="synonymFilterBtn" hidden>Multiple WP (synonymy)</button>
+  <button class="filter-btn" data-filter="wikidata-gbif-mismatch" id="wikidataMismatchFilterBtn" hidden>WD needs curation (vs GBIF)</button>
+</section>
+
+<section id="synonymyCheckSection" class="identity-panel" hidden>
+  <div class="identity-row">
+    <button id="checkSynonymyBtn" class="small-btn upload-btn">Cross-check against GBIF (synonymy + classification)</button>
+  </div>
+  <p class="identity-note">Cross-checks each taxon against GBIF (via QLever, not the REST API): its synonyms,
+    to find cases where the same organism has separate Wikipedia articles under different names; and its
+    classification, to flag a Wikidata item whose parent taxon is missing or disagrees with GBIF's. Not part of
+    the automatic pipeline since it adds real time on a large project, so it's opt-in.</p>
 </section>
 
 <section id="bulkActions" class="identity-panel" hidden>
@@ -304,6 +318,19 @@
           taxon chain is checked against iNaturalist's own reported ancestry — whichever reaches a
           known ancestor in the fewest hops is recommended as the likely correct one, advisory only,
           never applied automatically.
+        </li>
+        <li>
+          <strong>Bulk GBIF cross-check (opt-in)</strong> — a "Cross-check against GBIF" button that
+          runs the same two checks above, batched across every currently loaded taxon at once (VALUES
+          lists, not one request per taxon), revealing two more filters once it's done. Not automatic —
+          real added time on a large project even batched, so it's its own button rather than part of
+          the main run. <strong>"Multiple WP (synonymy)"</strong> flags a taxon whose organism has more
+          than one Wikipedia article across its name and its GBIF synonyms — worth checking whether
+          they should be merged. <strong>"WD needs curation (vs GBIF)"</strong> flags a Wikidata item
+          whose parent taxon is missing or disagrees with GBIF at the equivalent rank — only when
+          Wikidata's own parent is itself at one of GBIF's six modelled ranks, so a finer intermediate
+          rank Wikidata has and GBIF's flat classification doesn't (a tribe or subfamily, say) isn't
+          mistaken for a disagreement.
         </li>
         <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
