@@ -7,6 +7,7 @@ const WDQS_ENDPOINT = 'https://query.wikidata.org/sparql';
 const BHL_ENDPOINT = 'https://koetai.semscape.org/u/0000-0001-9773-4008/bhl/sparql';
 const PLAZI_ENDPOINT = 'https://qlever.ld.plazi.org/sparql'; // SynoSpecies' QLever mirror of Plazi TreatmentBank
 const COMMONS_ENDPOINT = 'https://qlever.dev/api/wikimedia-commons'; // QLever's Wikimedia Commons structured-data mirror
+const GBIF_ENDPOINT = 'https://qlever.dev/api/gbif'; // QLever's GBIF backbone mirror (Darwin Core RDF), used for synonym/homonym lookups
 
 // iNaturalist license codes that are actually reusable on Commons (public domain / attribution-only).
 // cc-by-nc, cc-by-nd, cc-by-nc-sa, cc-by-nc-nd and "all rights reserved" (null) are NOT Commons-compatible.
@@ -315,6 +316,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
     t.wikidata = chosen;
     t.wikidataAmbiguous = ambiguous;
     t.wikidataCandidateCount = distinctQids.length;
+    t.wikidataCandidateQids = distinctQids;
     t.wikidataInatIdConflict = inatIdConflict;
   }
   return taxa;
@@ -669,6 +671,246 @@ function compareTaxonomySources(ctx) {
     if (new Set(Object.values(values)).size > 1) disagreements.push({ rank, values });
   }
   return { sourceNames: sources.map(([name]) => name), disagreements };
+}
+
+// ---------- Synonymy & homonymy ----------
+// On-demand, per-taxon only (curation page) — the nested-OPTIONAL and multi-name lookups
+// below don't scale to a batch of hundreds like the rest of the pipeline does, so this
+// stays out of the fast bulk pass entirely. RDF end to end: GBIF's own data via QLever's
+// mirror (not the GBIF REST API) for names/synonyms, Wikidata via QLever first and live
+// WDQS as a fallback when QLever comes back empty — the same federation this whole app is
+// built to demonstrate, rather than reaching for a REST endpoint out of convenience.
+
+// QLever primary, live WDQS fallback if QLever comes back completely empty — same "trust
+// a match, re-check a miss" reasoning as the bulk pipeline (sparqlFirstRowWithFallback),
+// generalized to return every row instead of just the first, for the multi-row lookups
+// this feature needs (several synonym names or candidate items at once).
+async function sparqlAllRowsWithFallback(query, label) {
+  const primary = await sparqlViaComunica(query, QLEVER_ENDPOINT, { silent: true, label });
+  if (primary.length) return primary;
+  try {
+    return await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true, retries: 1, label });
+  } catch (e) {
+    log(`WDQS re-check failed for "${label}" (${e.message}) — trusting QLever's empty result`, 'warn');
+    return [];
+  }
+}
+
+// GBIF's QLever mirror models each usage as a dwc:Taxon with rdfs:label holding the clean
+// canonical name (confirmed live, on both an accepted usage and one of its synonyms) — the
+// UNIONs with dwc:species/dwc:scientificName are just a safety net in case some record
+// lacks a label. gbifv:acceptedNameUsage is only present when the matched record is
+// itself a synonym, pointing at the accepted one.
+async function fetchGbifUsage(name) {
+  const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX gbifv: <https://rs.gbif.org/terms/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?taxon ?accepted WHERE {
+  { ?taxon rdfs:label ${sparqlStringLiteral(name)} } UNION
+  { ?taxon dwc:species ${sparqlStringLiteral(name)} } UNION
+  { ?taxon dwc:scientificName ${sparqlStringLiteral(name)} }
+  OPTIONAL { ?taxon gbifv:acceptedNameUsage ?accepted }
+}`;
+  const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: `GBIF usage lookup for "${name}"` });
+  if (!rows.length) return null;
+  const row = rows[0];
+  return { taxonUri: row.taxon, acceptedUri: row.accepted || row.taxon, isSynonym: !!row.accepted };
+}
+
+// The reverse of acceptedNameUsage — every record that points AT this accepted usage is
+// one of its synonyms.
+async function fetchGbifSynonyms(acceptedUri) {
+  const query = `PREFIX gbifv: <https://rs.gbif.org/terms/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?syn ?name WHERE {
+  ?syn gbifv:acceptedNameUsage <${acceptedUri}> .
+  OPTIONAL { ?syn rdfs:label ?name }
+}`;
+  const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF synonyms' });
+  return [...new Set(rows.map(r => r.name).filter(Boolean))];
+}
+
+// Same exact-P225-match pattern the main pipeline uses, batched over a handful of
+// synonym names instead of a whole project's taxa. Filters to real items only (see
+// pushWikidataCandidate's comment — a stray Lexeme Sense matched a P225 query live once).
+async function fetchWikidataItemsForNames(names) {
+  const map = new Map();
+  if (!names.length) return map;
+  const values = names.map(n => sparqlStringLiteral(n)).join(' ');
+  const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?name ?item WHERE { VALUES ?name { ${values} } ?item wdt:P225 ?name }`;
+  const rows = await sparqlAllRowsWithFallback(query, 'Wikidata lookup for synonym names');
+  for (const r of rows) {
+    if (!/\/Q\d+$/.test(r.item)) continue;
+    const qid = r.item.split('/').pop();
+    (map.get(r.name) || map.set(r.name, []).get(r.name)).push(qid);
+  }
+  return map;
+}
+
+async function fetchSitelinksForQids(qids) {
+  const map = new Map();
+  if (!qids.length) return map;
+  const values = qids.map(q => `wd:${q}`).join(' ');
+  const optionals = LANGS.map(l => `OPTIONAL { ?article_${l.code} schema:about ?item ; schema:isPartOf <${l.wiki}> . }`).join('\n  ');
+  const selectVars = LANGS.map(l => `?article_${l.code}`).join(' ');
+  const query = `PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX schema: <http://schema.org/>
+SELECT ?item ${selectVars} WHERE { VALUES ?item { ${values} } ${optionals} }`;
+  const rows = await sparqlAllRowsWithFallback(query, 'Sitelinks for synonym items');
+  for (const r of rows) {
+    const qid = r.item.split('/').pop();
+    const langs = {};
+    for (const l of LANGS) langs[l.code] = r[`article_${l.code}`] || null;
+    map.set(qid, langs);
+  }
+  return map;
+}
+
+// P1420 ("taxon synonym") is Wikidata's formal way to link a synonym item to the item it's
+// a synonym of — checked in both directions, since which side carries the statement
+// varies in practice. Distinguishes "this name is genuinely modelled as a synonym on
+// Wikidata" from "a same-named item happens to exist for an unrelated reason".
+async function fetchTaxonSynonymLinks(qids) {
+  if (!qids.length) return [];
+  const values = qids.map(q => `wd:${q}`).join(' ');
+  const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?item ?synOf WHERE { VALUES ?item { ${values} } { ?item wdt:P1420 ?synOf } UNION { ?synOf wdt:P1420 ?item } }`;
+  const rows = await sparqlAllRowsWithFallback(query, 'P1420 synonym links');
+  return rows.map(r => ({ item: r.item.split('/').pop(), synOf: r.synOf.split('/').pop() }));
+}
+
+// For an ambiguous match (multiple Wikidata items share this taxon's scientific name —
+// real homonymy, not the stray-Lexeme artifact already filtered out elsewhere), find
+// which candidate's own P171 (parent taxon) chain actually agrees with what iNaturalist
+// reports for THIS taxon. One query per candidate, using nested OPTIONALs to fetch up to
+// three ancestor levels (parent/grandparent/great-grandparent) at once rather than one
+// round trip per level — enough to separate genuinely different lineages (an unrelated
+// homonym from another kingdom won't match at any of the three) without walking the
+// whole tree. The candidate whose chain matches a known ancestor in the FEWEST hops is
+// the more likely one — this is advisory for the curator, not auto-applied to `t.wikidata`.
+async function disambiguateHomonyms(qids, ancestorNames) {
+  const results = [];
+  for (const qid of qids) {
+    const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?a1n ?a2n ?a3n WHERE {
+  wd:${qid} wdt:P171 ?a1 .
+  OPTIONAL { ?a1 wdt:P225 ?a1n }
+  OPTIONAL {
+    ?a1 wdt:P171 ?a2 .
+    OPTIONAL { ?a2 wdt:P225 ?a2n }
+    OPTIONAL {
+      ?a2 wdt:P171 ?a3 .
+      OPTIONAL { ?a3 wdt:P225 ?a3n }
+    }
+  }
+}`;
+    try {
+      const rows = await sparqlAllRowsWithFallback(query, `Homonym disambiguation for ${qid}`);
+      const row = rows[0] || {};
+      const chain = [row.a1n, row.a2n, row.a3n].filter(Boolean);
+      const depth = [row.a1n, row.a2n, row.a3n].findIndex(name => name && ancestorNames.includes(name));
+      results.push({ qid, depth: depth === -1 ? null : depth + 1, chain });
+    } catch (e) {
+      results.push({ qid, depth: null, chain: [], error: e.message });
+    }
+  }
+  return results;
+}
+
+// Orchestrates the whole synonymy/homonymy check for one taxon — homonym disambiguation
+// when the match is ambiguous, and a GBIF-sourced synonym check always attempted (an
+// informational cross-reference regardless of match status, and the closest thing to a
+// "rescue" path when `t.wikidata` is null because iNaturalist and Wikidata simply
+// disagree on which name is current).
+async function buildSynonymyInfo(t, ctx) {
+  const info = {};
+
+  if (t.wikidataAmbiguous && t.wikidataCandidateQids && t.wikidataCandidateQids.length > 1) {
+    const ancestorNames = ctx ? Object.values(ctx.ranks).filter(Boolean) : [];
+    try {
+      info.homonym = await disambiguateHomonyms(t.wikidataCandidateQids, ancestorNames);
+    } catch (e) { info.homonymError = e.message; }
+  }
+
+  try {
+    const usage = await fetchGbifUsage(t.name);
+    if (usage) {
+      const synonymNames = (await fetchGbifSynonyms(usage.acceptedUri)).filter(n => n !== t.name);
+      const wdMatches = await fetchWikidataItemsForNames(synonymNames);
+      const allQids = [...new Set([].concat(...wdMatches.values()))];
+      const sitelinks = await fetchSitelinksForQids(allQids);
+      const linkCheckQids = t.wikidata ? [...new Set([...allQids, t.wikidata.qid])] : allQids;
+      const synLinks = await fetchTaxonSynonymLinks(linkCheckQids);
+      info.synonyms = { names: synonymNames, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
+    }
+  } catch (e) { info.synonymsError = e.message; }
+
+  return info;
+}
+
+function synonymyPanel(t, info) {
+  const sections = [];
+
+  if (info.homonym) {
+    const ranked = [...info.homonym].sort((a, b) => (a.depth ?? 99) - (b.depth ?? 99));
+    const best = ranked.find(r => r.depth != null);
+    const rows = ranked.map(r => {
+      const isCurrent = t.wikidata && r.qid === t.wikidata.qid;
+      const status = r.depth != null
+        ? `matches a known ancestor at ${r.depth} hop${r.depth === 1 ? '' : 's'} (${r.chain.slice(0, r.depth).join(' › ')})`
+        : (r.error ? `lookup failed: ${escapeHtml(r.error)}` : 'no known ancestor found within 3 hops');
+      return `<li>${isCurrent ? "<strong>→ this taxon's current match</strong> — " : ''}<a href="https://www.wikidata.org/wiki/${r.qid}" target="_blank" rel="noopener">${r.qid}</a> — ${status}</li>`;
+    }).join('');
+    const recommendation = !best
+      ? `None of the candidates' parent chains matched a known ancestor within 3 hops — can't recommend one over another from this alone.`
+      : (t.wikidata && best.qid === t.wikidata.qid)
+        ? `This tool's own pick (${t.wikidata.qid}) already has the shortest matching path — likely correct.`
+        : `<a href="https://www.wikidata.org/wiki/${best.qid}" target="_blank" rel="noopener">${best.qid}</a> has a shorter matching path than the current pick — likely the better match. Consider adding its iNaturalist id (P3151) so future runs pick it automatically.`;
+    sections.push(`<div><strong>Homonym disambiguation</strong> — by shortest path to a known ancestor (parent/grandparent/great-grandparent via P171):
+      <ul>${rows}</ul>
+      <p class="identity-note">${recommendation}</p>
+    </div>`);
+  }
+
+  if (info.synonyms) {
+    const { names, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
+    const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
+    const withArticleNames = [];
+    let rescue = null;
+    const rows = names.map(name => {
+      const qids = wdMatches.get(name) || [];
+      if (!qids.length) return `<li><em>${escapeHtml(name)}</em> — not on Wikidata</li>`;
+      return qids.map(qid => {
+        const langs = sitelinks.get(qid) || {};
+        const withArticle = LANGS.filter(l => langs[l.code]);
+        if (withArticle.length) withArticleNames.push(name);
+        const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
+        if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
+        return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>` +
+          `${withArticle.length ? ` — has ${withArticle.map(l => l.code).join('/')} Wikipedia` : ' — no Wikipedia article'}` +
+          `${isSyn ? ' — P1420-linked as a synonym on Wikidata' : ' — same name exists on Wikidata but not P1420-linked as a synonym'}</li>`;
+      }).join('');
+    }).join('');
+    const rescueNote = rescue
+      ? `<p class="identity-note"><strong>Possible rescue:</strong> this taxon wasn't matched to Wikidata under its iNaturalist name, but its GBIF synonym <em>${escapeHtml(rescue.name)}</em> resolves to <a href="https://www.wikidata.org/wiki/${rescue.qid}" target="_blank" rel="noopener">${rescue.qid}</a>, which already has a ${rescue.langs.join('/')} Wikipedia article — very likely the right item. Consider adding <em>${escapeHtml(t.name)}</em> as an alias there, or as an additional P225 value.</p>`
+      : '';
+    const gbifNote = isSynonym
+      ? `<p class="identity-note"><em>${escapeHtml(t.name)}</em> is itself a GBIF synonym — counts below are for its accepted usage.</p>`
+      : '';
+    sections.push(`<div><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article.
+      ${gbifNote}
+      ${names.length ? `<ul>${rows}</ul>` : ''}
+      ${rescueNote}
+    </div>`);
+  } else if (info.synonymsError) {
+    sections.push(`<div><strong>Synonyms</strong> — could not check: ${escapeHtml(info.synonymsError)}</div>`);
+  }
+
+  if (!sections.length) return '';
+  return `<div class="identity-panel taxon-action-panel"><h3>Synonymy &amp; homonymy</h3>${sections.join('')}</div>`;
 }
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
@@ -1762,6 +2004,16 @@ async function renderTaxonDetail(t) {
       <strong>Wikipedia stub drafting is disabled</strong> until this is linked. Proposed QuickStatements to add just that:`,
       buildInatIdLinkQS(t), { showQsLink: true }));
   }
+
+  // Synonymy/homonymy — informational (and, when t.wikidata is null, a potential rescue
+  // path), so attempted regardless of which case applied above. Degrades silently: a
+  // failed lookup here shouldn't block the rest of the page.
+  try {
+    const synInfo = await buildSynonymyInfo(t, ctx);
+    if (myToken !== taxonDetailRenderToken) return;
+    const panel = synonymyPanel(t, synInfo);
+    if (panel) panels.push(panel);
+  } catch (e) { /* informational only */ }
 
   // Wikipedia: one auto-drafted stub per still-missing language, all at once. Each
   // stub's lead sentence starts with no citation ({{citation needed}}) — iNaturalist
