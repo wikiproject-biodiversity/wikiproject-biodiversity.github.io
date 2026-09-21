@@ -292,7 +292,16 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
       "Fabaceae", not a disagreement at all, but flagged as one before this guard was
       added). With the guard, the same test data correctly dropped from 6 flagged taxa to
       the 1 genuine case (a species Wikidata and GBIF's backbone place in different
-      genera).
+      genera). The badge is clickable (`gbifMismatchDetail()`), not a hover-only tooltip —
+      this app otherwise always expands a clicked badge into a persistent detail row, and a
+      tooltip was the one place that didn't, which made the flag itself hard to act on.
+      Expanding it shows the actual disagreement, a Wikidata search link either way, and —
+      only for the "no `P171` at all" case — a safe QuickStatements addition if GBIF's
+      expected parent resolves to exactly one Wikidata item. Deliberately not offered for
+      an existing-but-disagreeing `P171`: adding a second value there would just create the
+      same kind of multi-value conflict this tool already flags for `P3151` elsewhere
+      (`inatIdConflictDetail`), not fix anything — that case needs a human correcting the
+      existing statement on Wikidata directly.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
