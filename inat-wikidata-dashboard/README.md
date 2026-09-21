@@ -267,6 +267,32 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
       as the likely correct one — an unrelated homonym from a different kingdom won't
       match within three hops at all. Advisory only, shown to the curator; never changes
       `t.wikidata` automatically.
+13. **Bulk GBIF cross-check (opt-in)** — a "Cross-check against GBIF" button
+    (`resolveGbifCrossCheck()`) that batches items 12's two checks across every currently
+    loaded taxon at once — VALUES lists instead of one request per taxon, the same way the
+    rest of the pipeline batches Wikidata — rather than the one-taxon-at-a-time queries
+    the curation page's own panel runs. Deliberately not automatic: even batched, it's
+    real added time on a large project, so it's its own button rather than folded into the
+    main run.
+    - **Multiple Wikipedia pages via synonymy** (`hasSynonymDuplication`, "Multiple WP
+      (synonymy)" filter) — flags a taxon when more than one name for the same organism
+      (its own, or a GBIF synonym) has its own separate Wikipedia article; a real
+      "same species split across pages" risk worth a look, not merely informational.
+    - **Wikidata classification vs GBIF** (`wikidataGbifMismatch`, "WD needs curation (vs
+      GBIF)" filter) — flags a Wikidata item whose direct `P171` parent either doesn't
+      exist at all, or disagrees with what GBIF reports at the equivalent rank
+      (`GBIF_PARENT_NAME_FIELD`, mirroring `GBIF_PARENT_KEY_FIELD`'s existing rank→parent-rank
+      mapping). Comparing a single hop only works because it's guarded: a disagreement is
+      only flagged when the Wikidata parent's *own* rank is itself one of GBIF's six
+      modelled ranks (kingdom/phylum/class/order/family/genus, checked via the same
+      `getTaxonomicRankQids()` used for QuickStatements' `P105`) — found live, comparing
+      unconditionally produced false positives whenever Wikidata modelled a finer
+      intermediate rank GBIF's flat fields don't represent (*Indigofera*'s real `P171`
+      parent is "Indigofereae", ranked *tribe* — entirely consistent with GBIF's family
+      "Fabaceae", not a disagreement at all, but flagged as one before this guard was
+      added). With the guard, the same test data correctly dropped from 6 flagged taxa to
+      the 1 genuine case (a species Wikidata and GBIF's backbone place in different
+      genera).
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
