@@ -237,6 +237,36 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
     Resolving the hash still needs this run's own `currentTaxa` in memory (no backend to
     look a bare taxon id up against without a project/user already loaded), so a bookmarked
     link only resolves after loading a scope that actually contains that taxon.
+12. **Synonymy & homonymy** — a panel on the curation page (`buildSynonymyInfo()`,
+    `synonymyPanel()`), on-demand and per-taxon only; the lookups below don't scale to a
+    batch of hundreds the way the rest of the pipeline does. RDF end to end, same
+    federation spirit as everywhere else in this tool: GBIF's own SPARQL mirror on QLever
+    (`qlever.dev/api/gbif`, Darwin Core RDF) instead of GBIF's REST API, Wikidata via
+    QLever first with live WDQS as a fallback when QLever comes back empty
+    (`sparqlAllRowsWithFallback()`, the same "trust a match, re-check a miss" reasoning as
+    the bulk pipeline, generalized past just the first row).
+    - **Synonyms**: every synonym GBIF records for the taxon's accepted usage
+      (`fetchGbifSynonyms()`, via GBIF's `gbifv:acceptedNameUsage` — reversed, since that
+      property points *from* a synonym record *to* its accepted one), cross-checked
+      against Wikidata for an exact `P225` name match and, for any that resolve, whether
+      it has a Wikipedia article and whether it's formally linked back with `P1420`
+      ("taxon synonym", checked in both directions — which side carries the statement
+      varies in practice) rather than just coincidentally sharing a name. Reports the
+      count on each side (GBIF / also-on-Wikidata / with-a-Wikipedia-article). If the
+      taxon itself has no Wikidata match but one of its synonyms resolves to an item that
+      already has an article, that's flagged as a likely rescue — the taxon is probably
+      already covered under a name Wikidata prefers, worth an alias rather than a new
+      `CREATE`.
+    - **Homonyms**: when the match is ambiguous (multiple Wikidata items share the exact
+      scientific name — real homonymy, not the stray-Lexeme-Sense artifact already
+      filtered out of candidate matching elsewhere), each candidate's own `P171` (parent
+      taxon) chain is checked against what iNaturalist reports as this taxon's actual
+      ancestry, up to three levels (parent/grandparent/great-grandparent, fetched in one
+      query per candidate via nested `OPTIONAL`s rather than one round trip per level).
+      The candidate whose chain reaches a known ancestor in the fewest hops is recommended
+      as the likely correct one — an unrelated homonym from a different kingdom won't
+      match within three hops at all. Advisory only, shown to the curator; never changes
+      `t.wikidata` automatically.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
