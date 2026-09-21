@@ -245,11 +245,16 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
 
 ### Known limitations (v1)
 
-- Matching against Wikidata is by **exact scientific name string** (`wdt:P225`). A
-  taxon that iNaturalist has under a different name than Wikidata (synonyms, recent
-  splits/lumps) won't resolve, even though iNaturalist itself may already link to an
-  article under the old name (shown by iNaturalist's own `taxon.wikipedia_url`, which
-  this tool doesn't yet cross-check).
+- Matching against Wikidata is by **exact scientific name string** (`wdt:P225`), with no
+  synonym resolution. A taxon that iNaturalist has under a different name than Wikidata
+  (synonyms, recent splits/lumps either side hasn't caught up to) won't resolve at all —
+  `t.wikidata` stays `null`, and the "propose creating a new item" flow would offer to
+  `CREATE` what might actually be a duplicate under a different name. `inatWikipediaLangMatch()`
+  cross-checks iNaturalist's own `taxon.wikipedia_url` per language, but only *after* a
+  taxon is already matched to a Wikidata item — it catches a missing-article false
+  positive on an item this tool already found, not a missing *item* in the first place.
+  The stated safety net for the create-draft case is QuickStatements' own duplicate-item
+  warning, reviewed by a human before running — not synonym detection in this tool.
 - Homonyms — the same scientific name attached to more than one Wikidata item — are
   resolved by preferring whichever item's `P3151` matches the iNaturalist taxon ID;
   ambiguous matches are flagged with a ⚠ in the Wikidata column.
