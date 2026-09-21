@@ -293,6 +293,19 @@
           instead of scanning many at once.
         </li>
         <li>
+          <strong>Synonymy &amp; homonymy</strong> — also on the curation page, on-demand per taxon.
+          Every synonym GBIF records for the taxon (via GBIF's own SPARQL mirror on QLever, not its
+          REST API) is cross-checked against Wikidata: does the synonym name also exist as an item,
+          does that item have a Wikipedia article, and is it formally linked back with
+          <code>P1420</code> ("taxon synonym") rather than just coincidentally sharing a name. If the
+          taxon itself isn't matched to Wikidata but one of its synonyms already has an article, that's
+          flagged as a likely rescue — probably already covered under a name Wikidata prefers. For an
+          ambiguous match (multiple Wikidata items sharing the exact name), each candidate's parent
+          taxon chain is checked against iNaturalist's own reported ancestry — whichever reaches a
+          known ancestor in the fewest hops is recommended as the likely correct one, advisory only,
+          never applied automatically.
+        </li>
+        <li>
           <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
           richer Wikimedia Commons media panel are the next sources to wire into this dashboard.
         </li>
