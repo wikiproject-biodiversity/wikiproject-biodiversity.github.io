@@ -28,6 +28,7 @@ const LANGS = [
 
 const BATCH_SIZE = 100; // VALUES lists this size run in well under 200ms on QLever (tested); bigger batches means fewer requests, which matters more than batch size for staying under a public endpoint's rate limit
 const WDQS_BATCH_SIZE = 25; // WDQS itself, not just QLever, evidently struggles with 100-item VALUES lists under current load (observed timing out even on the already-reduced "misses only" re-check set) — smaller requests to the one endpoint this tool can't avoid entirely
+const GBIF_BATCH_SIZE = 50; // conservative — this app's GBIF batching (via QLever) is new and hasn't been proven at BATCH_SIZE scale the way Wikidata's has
 const MAX_OBSERVATIONS = 5000; // safety cap for a single run
 
 let comunicaEngine = null;
@@ -913,6 +914,197 @@ function synonymyPanel(t, info) {
   return `<div class="identity-panel taxon-action-panel"><h3>Synonymy &amp; homonymy</h3>${sections.join('')}</div>`;
 }
 
+// ---------- Bulk GBIF cross-check (opt-in) ----------
+// The per-taxon lookups above don't scale to hundreds of taxa one at a time, but batched
+// the same way the rest of the pipeline batches Wikidata — VALUES lists instead of one
+// request per taxon — GBIF's synonym/classification data can be cross-checked across a
+// whole project in a handful of requests. Still deliberately NOT part of the automatic
+// pipeline (triggered by its own button): it's a secondary, opt-in check, and even
+// batched it's real additional time on a large project.
+
+// Batched form of fetchGbifUsage, extended to also pull the classification fields
+// (dwc:kingdom/phylum/class/order/family/genus) needed for the Wikidata-vs-GBIF
+// comparison below — one round trip serves both the synonymy and classification checks.
+async function fetchGbifUsagesForNames(names) {
+  const map = new Map();
+  if (!names.length) return map;
+  const values = names.map(n => sparqlStringLiteral(n)).join(' ');
+  const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX gbifv: <https://rs.gbif.org/terms/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?name ?taxon ?accepted ?kingdom ?phylum ?class ?order ?family ?genus WHERE {
+  VALUES ?name { ${values} }
+  { ?taxon rdfs:label ?name } UNION { ?taxon dwc:species ?name } UNION { ?taxon dwc:scientificName ?name }
+  OPTIONAL { ?taxon gbifv:acceptedNameUsage ?accepted }
+  OPTIONAL { ?taxon dwc:kingdom ?kingdom }
+  OPTIONAL { ?taxon dwc:phylum ?phylum }
+  OPTIONAL { ?taxon dwc:class ?class }
+  OPTIONAL { ?taxon dwc:order ?order }
+  OPTIONAL { ?taxon dwc:family ?family }
+  OPTIONAL { ?taxon dwc:genus ?genus }
+}`;
+  const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF usage lookup (batch)' });
+  for (const r of rows) {
+    if (map.has(r.name)) continue; // first match wins on the rare case a name matches multiple records
+    map.set(r.name, {
+      taxonUri: r.taxon,
+      acceptedUri: r.accepted || r.taxon,
+      isSynonym: !!r.accepted,
+      ranks: { kingdom: r.kingdom, phylum: r.phylum, class: r.class, order: r.order, family: r.family, genus: r.genus },
+    });
+  }
+  return map;
+}
+
+async function fetchGbifSynonymsForUris(acceptedUris) {
+  const map = new Map();
+  if (!acceptedUris.length) return map;
+  const values = acceptedUris.map(u => `<${u}>`).join(' ');
+  const query = `PREFIX gbifv: <https://rs.gbif.org/terms/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?accepted ?name WHERE {
+  VALUES ?accepted { ${values} }
+  ?syn gbifv:acceptedNameUsage ?accepted .
+  OPTIONAL { ?syn rdfs:label ?name }
+}`;
+  const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF synonyms (batch)' });
+  for (const r of rows) {
+    if (!r.name) continue;
+    (map.get(r.accepted) || map.set(r.accepted, []).get(r.accepted)).push(r.name);
+  }
+  return map;
+}
+
+// One hop only (P171 direct parent, not the whole chain) — deliberately shallow so it
+// batches cleanly across every matched taxon in one VALUES list, unlike the per-candidate
+// nested-OPTIONAL walk disambiguateHomonyms does for the (much smaller) ambiguous case.
+// Also fetches the parent's own rank (P105) — Wikidata's classification tree commonly has
+// intermediate ranks (tribe, subfamily, superfamily...) that GBIF's flat kingdom/phylum/
+// class/order/family/genus model doesn't represent at all. Found live: Indigofera's P171
+// parent is "Indigofereae", ranked *tribe* — not a disagreement with GBIF's family
+// "Fabaceae", just a rank GBIF's model skips over. Comparing the two without checking
+// this first is how that got flagged as a false "needs curation" the first time this
+// feature ran. The caller only compares when the parent's rank is itself one of GBIF's
+// six; otherwise there's nothing that can be fairly compared.
+async function fetchWikidataDirectParents(qids) {
+  const map = new Map();
+  if (!qids.length) return map;
+  const values = qids.map(q => `wd:${q}`).join(' ');
+  const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?item ?parentName ?parentRank WHERE {
+  VALUES ?item { ${values} }
+  OPTIONAL {
+    ?item wdt:P171 ?parent .
+    OPTIONAL { ?parent wdt:P225 ?parentName }
+    OPTIONAL { ?parent wdt:P105 ?parentRank }
+  }
+}`;
+  const rows = await sparqlAllRowsWithFallback(query, 'Wikidata direct parent (P171) for classification check');
+  for (const r of rows) {
+    map.set(r.item.split('/').pop(), {
+      name: r.parentName || null,
+      rankQid: r.parentRank ? r.parentRank.split('/').pop() : null,
+    });
+  }
+  return map;
+}
+
+// Populates, on every taxon: `synonymArticleNames` / `hasSynonymDuplication` (does the
+// same organism have more than one Wikipedia article, split across its accepted name and
+// its GBIF synonyms?) and `wikidataGbifMismatch` (does the matched Wikidata item's own
+// P171 parent agree with what GBIF reports at the equivalent rank — `null` when there's
+// nothing to compare, `{kind:'incomplete', expected}` when Wikidata has no P171 at all
+// despite GBIF having an answer, `{kind:'wrong', expected, actual}` when they disagree).
+async function resolveGbifCrossCheck(taxa) {
+  const names = [...new Set(taxa.map(t => t.name))];
+  const usageMap = new Map();
+  await runBatchedStep(names, 'GBIF cross-check — usage lookup', async (batch) => {
+    const rows = await fetchGbifUsagesForNames(batch);
+    for (const [name, usage] of rows) usageMap.set(name, usage);
+    return rows.size;
+  }, GBIF_BATCH_SIZE);
+
+  const acceptedUris = [...new Set([...usageMap.values()].map(u => u.acceptedUri))];
+  const synonymMap = new Map();
+  await runBatchedStep(acceptedUris, 'GBIF cross-check — synonyms', async (batch) => {
+    const rows = await fetchGbifSynonymsForUris(batch);
+    let count = 0;
+    for (const [uri, syns] of rows) { synonymMap.set(uri, syns); count += syns.length; }
+    return count;
+  }, GBIF_BATCH_SIZE);
+
+  const candidateNames = new Set();
+  for (const t of taxa) {
+    const usage = usageMap.get(t.name);
+    const synonyms = usage ? (synonymMap.get(usage.acceptedUri) || []) : [];
+    t._synonymNames = synonyms.filter(n => n !== t.name);
+    for (const n of t._synonymNames) candidateNames.add(n);
+  }
+
+  const wdMap = new Map();
+  await runBatchedStep([...candidateNames], 'GBIF cross-check — Wikidata lookup for synonym names', async (batch) => {
+    const rows = await fetchWikidataItemsForNames(batch);
+    let count = 0;
+    for (const [name, qids] of rows) { wdMap.set(name, qids); count += qids.length; }
+    return count;
+  }, BATCH_SIZE);
+
+  const allSynQids = [...new Set([].concat(...wdMap.values()))];
+  const sitelinkMap = new Map();
+  await runBatchedStep(allSynQids, 'GBIF cross-check — sitelinks for synonym items', async (batch) => {
+    const rows = await fetchSitelinksForQids(batch);
+    for (const [qid, langs] of rows) sitelinkMap.set(qid, langs);
+    return rows.size;
+  }, BATCH_SIZE);
+
+  const wikidataQids = [...new Set(taxa.filter(t => t.wikidata).map(t => t.wikidata.qid))];
+  const parentMap = new Map();
+  await runBatchedStep(wikidataQids, 'GBIF cross-check — Wikidata classification', async (batch) => {
+    const rows = await fetchWikidataDirectParents(batch);
+    for (const [qid, info] of rows) parentMap.set(qid, info);
+    return rows.size;
+  }, BATCH_SIZE);
+  const rankQids = await getTaxonomicRankQids().catch(() => new Map());
+  const primaryRankQids = new Set(
+    ['kingdom', 'phylum', 'class', 'order', 'family', 'genus'].map(r => rankQids.get(r)).filter(Boolean)
+  );
+
+  for (const t of taxa) {
+    const articleNames = new Set();
+    if (t.wikidata && t.wikipedia && LANGS.some(l => t.wikipedia[l.code])) articleNames.add(t.name);
+    for (const name of (t._synonymNames || [])) {
+      const qids = wdMap.get(name) || [];
+      if (qids.some(qid => { const langs = sitelinkMap.get(qid); return langs && LANGS.some(l => langs[l.code]); })) {
+        articleNames.add(name);
+      }
+    }
+    t.synonymArticleNames = [...articleNames];
+    t.hasSynonymDuplication = articleNames.size > 1;
+
+    t.wikidataGbifMismatch = null;
+    if (t.wikidata) {
+      const usage = usageMap.get(t.name);
+      const expectedField = GBIF_PARENT_NAME_FIELD[(t.rank || '').toLowerCase()];
+      const expected = usage && expectedField ? usage.ranks[expectedField] : null;
+      if (expected) {
+        const parentInfo = parentMap.get(t.wikidata.qid);
+        if (!parentInfo || !parentInfo.name) {
+          // No P171 at all — a genuine completeness gap regardless of rank granularity.
+          t.wikidataGbifMismatch = { kind: 'incomplete', expected };
+        } else if (parentInfo.rankQid && primaryRankQids.has(parentInfo.rankQid) && parentInfo.name !== expected) {
+          // Only flag a disagreement when the parent is ITSELF at one of GBIF's six
+          // modeled ranks — otherwise it's likely just a finer intermediate rank
+          // (tribe/subfamily/superfamily/...) GBIF's flat model doesn't represent, not
+          // an actual conflict, and guessing wrong here is worse than saying nothing.
+          t.wikidataGbifMismatch = { kind: 'wrong', expected, actual: parentInfo.name };
+        }
+      }
+    }
+  }
+  return taxa;
+}
+
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 
 // The bare "Filename.jpg" for a taxon's photo, if it's already on Commons
@@ -1272,6 +1464,19 @@ const GBIF_PARENT_KEY_FIELD = {
   order: 'classKey', suborder: 'orderKey',
   class: 'phylumKey', subclass: 'classKey',
   phylum: 'kingdomKey', subphylum: 'phylumKey',
+};
+
+// Same rank-to-parent-rank mapping as GBIF_PARENT_KEY_FIELD above, but pointing at GBIF's
+// RDF name fields (dwc:kingdom/phylum/class/order/family/genus, plain strings) instead of
+// the REST API's numeric *Key fields — used for the bulk Wikidata-vs-GBIF classification
+// check, which compares names, not ids.
+const GBIF_PARENT_NAME_FIELD = {
+  species: 'genus', subspecies: 'species', variety: 'species', form: 'species',
+  genus: 'family', subgenus: 'genus',
+  family: 'order', subfamily: 'family', tribe: 'family', subtribe: 'family',
+  order: 'class', suborder: 'order',
+  class: 'phylum', subclass: 'class',
+  phylum: 'kingdom', subphylum: 'phylum',
 };
 
 // NCBI Taxonomy's esearch, scoped to the "scientific name" field so an ambiguous common
@@ -1679,6 +1884,13 @@ const taxonDetailBackBtn = document.getElementById('taxonDetailBack');
 const taxonDetailHeaderEl = document.getElementById('taxonDetailHeader');
 const taxonDetailRowEl = document.getElementById('taxonDetailRow');
 const taxonDetailActionsEl = document.getElementById('taxonDetailActions');
+const synonymyCheckSectionEl = document.getElementById('synonymyCheckSection');
+const checkSynonymyBtn = document.getElementById('checkSynonymyBtn');
+const synonymFilterBtn = document.getElementById('synonymFilterBtn');
+const wikidataMismatchFilterBtn = document.getElementById('wikidataMismatchFilterBtn');
+const statSynonymDuplicateCard = document.getElementById('statSynonymDuplicateCard');
+const statWikidataMismatchCard = document.getElementById('statWikidataMismatchCard');
+let gbifCrossCheckDone = false;
 
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
@@ -1813,6 +2025,8 @@ function matchesFilter(t) {
   if (currentFilter === 'unresolved') return !t.wikidata;
   if (currentFilter === 'inat-id-missing') return inatIdMissing(t);
   if (currentFilter === 'inat-id-conflict') return !!t.wikidataInatIdConflict;
+  if (currentFilter === 'synonym-duplicate') return !!t.hasSynonymDuplication;
+  if (currentFilter === 'wikidata-gbif-mismatch') return !!t.wikidataGbifMismatch;
   const missing = taxonMissingCount(t);
   if (missing === null) return false;
   if (currentFilter === 'missing-any') return missing > 0;
@@ -1887,13 +2101,20 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const wdLink = t.wikidata
     ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
     : '';
-  const wd = !t.wikidata
+  const gbifMismatchBadge = t.wikidataGbifMismatch
+    ? ` <span class="pill" title="${t.wikidataGbifMismatch.kind === 'incomplete'
+        ? `This item has no parent taxon (P171) statement at all, but GBIF reports ${escapeHtml(t.wikidataGbifMismatch.expected)} at the equivalent rank.`
+        : `This item's parent taxon (P171) is ${escapeHtml(t.wikidataGbifMismatch.actual)}, but GBIF reports ${escapeHtml(t.wikidataGbifMismatch.expected)} at the equivalent rank.`
+      }">⚠ needs curation (vs GBIF)</span>`
+    : '';
+  const wd = (!t.wikidata
     ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
     : t.wikidataInatIdConflict
       ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
       : inatIdLinked(t)
         ? wdLink
-        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`;
+        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`
+  ) + gbifMismatchBadge;
   const gbif = t.wikidata && t.wikidata.gbif
     ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
     : '<span class="pill">—</span>';
@@ -1909,11 +2130,14 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const name = linkName
     ? `<a class="taxon-name" href="${taxonUrl(t.inatId)}" title="Open this taxon's curation page">${t.name}</a>`
     : `<span class="taxon-name">${t.name}</span>`;
+  const synonymDuplicateBadge = t.hasSynonymDuplication
+    ? ` <span class="pill" title="This organism has separate Wikipedia articles under more than one name: ${escapeHtml((t.synonymArticleNames || []).join(', '))}. Consider whether these should be merged.">⚠ ${(t.synonymArticleNames || []).length} WP pages</span>`
+    : '';
 
   return `
       <td>${photo}</td>
       <td>
-        ${name}
+        ${name}${synonymDuplicateBadge}
         ${t.commonName ? `<span class="taxon-common">${t.commonName}</span>` : ''}
       </td>
       <td>${image}</td>
@@ -1955,6 +2179,7 @@ async function renderTaxonDetail(t) {
   filtersEl.hidden = true;
   bulkActionsEl.hidden = true;
   tableWrapEl.hidden = true;
+  synonymyCheckSectionEl.hidden = true;
   taxonDetailEl.hidden = false;
 
   taxonDetailRowEl.innerHTML = buildTaxonRowCells(t, { linkName: false });
@@ -2310,6 +2535,7 @@ function showTableView() {
     statsEl.hidden = false;
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
+    synonymyCheckSectionEl.hidden = false;
     updateStats(); // re-derives the bulk-action button's visibility too
   }
 }
@@ -2788,6 +3014,19 @@ function updateStats() {
   document.getElementById('statInatIdConflict').textContent = inatIdConflict;
   statsEl.hidden = false;
   updateBulkInatIdAction(inatIdMissingCount);
+
+  // Only meaningful once the opt-in GBIF cross-check has actually run — the stat cards
+  // and filter buttons stay hidden until then rather than showing a misleading "0".
+  if (gbifCrossCheckDone) {
+    const synonymDuplicateCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
+    const wikidataMismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
+    document.getElementById('statSynonymDuplicate').textContent = synonymDuplicateCount;
+    document.getElementById('statWikidataMismatch').textContent = wikidataMismatchCount;
+    statSynonymDuplicateCard.hidden = false;
+    statWikidataMismatchCard.hidden = false;
+    synonymFilterBtn.hidden = false;
+    wikidataMismatchFilterBtn.hidden = false;
+  }
 }
 
 // Collects every taxon still missing its iNaturalist id link into one QuickStatements
@@ -2824,6 +3063,12 @@ async function run() {
   bulkActionsEl.hidden = true;
   bulkInatIdBox.hidden = true;
   taxonDetailEl.hidden = true;
+  synonymyCheckSectionEl.hidden = true;
+  statSynonymDuplicateCard.hidden = true;
+  statWikidataMismatchCard.hidden = true;
+  synonymFilterBtn.hidden = true;
+  wikidataMismatchFilterBtn.hidden = true;
+  gbifCrossCheckDone = false;
   identityState = null;
   currentTaxa = [];
   if (location.hash) location.hash = ''; // a fresh search always starts on the table, not a stale taxon page
@@ -2862,6 +3107,7 @@ async function run() {
     updateStats();
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
+    synonymyCheckSectionEl.hidden = false;
     currentFilter = 'all';
     [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
     renderTable();
@@ -2873,6 +3119,30 @@ async function run() {
     statusSpinnerEl.hidden = true;
   }
 }
+
+checkSynonymyBtn.addEventListener('click', async () => {
+  checkSynonymyBtn.disabled = true;
+  const originalText = checkSynonymyBtn.textContent;
+  checkSynonymyBtn.textContent = 'Checking…';
+  statusSpinnerEl.hidden = false;
+  setStatusHeader('Cross-checking against GBIF (synonymy + classification)…');
+  try {
+    await resolveGbifCrossCheck(currentTaxa);
+    gbifCrossCheckDone = true;
+    updateStats();
+    renderTable();
+    const dupCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
+    const mismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
+    log(`GBIF cross-check — ${dupCount} taxa with multiple Wikipedia pages via synonymy, ${mismatchCount} with a Wikidata/GBIF classification mismatch.`);
+  } catch (e) {
+    log(`GBIF cross-check failed: ${e.message}`, 'err');
+  } finally {
+    setStatusHeader(`Done — ${currentTaxa.length} taxa loaded.`);
+    checkSynonymyBtn.disabled = false;
+    checkSynonymyBtn.textContent = originalText;
+    statusSpinnerEl.hidden = true;
+  }
+});
 
 runBtn.addEventListener('click', run);
 projectInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
