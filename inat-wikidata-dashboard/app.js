@@ -714,7 +714,14 @@ SELECT ?taxon ?accepted WHERE {
 }`;
   const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: `GBIF usage lookup for "${name}"` });
   if (!rows.length) return null;
-  const row = rows[0];
+  // More than one GBIF record can share the exact same label — found live, "Cleome
+  // pallida" matches both the actual accepted usage (genus Cleome) AND an unrelated
+  // synonym record (genus Dipterygium, a synonym of a different species entirely) that
+  // merely happens to carry the same label. Taking whichever row an unordered query
+  // returns first picked the synonym here, comparing Wikidata against the wrong genus.
+  // Prefer a row that's itself the accepted usage (no acceptedNameUsage of its own) —
+  // GBIF's own taxonomicStatus already tells us which one is authoritative.
+  const row = rows.find(r => !r.accepted) || rows[0];
   return { taxonUri: row.taxon, acceptedUri: row.accepted || row.taxon, isSynonym: !!row.accepted };
 }
 
@@ -944,9 +951,17 @@ SELECT ?name ?taxon ?accepted ?kingdom ?phylum ?class ?order ?family ?genus WHER
   OPTIONAL { ?taxon dwc:genus ?genus }
 }`;
   const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF usage lookup (batch)' });
-  for (const r of rows) {
-    if (map.has(r.name)) continue; // first match wins on the rare case a name matches multiple records
-    map.set(r.name, {
+  // More than one GBIF record can share the exact same label — found live, "Cleome
+  // pallida" matches both the actual accepted usage (genus Cleome) and an unrelated
+  // synonym record (genus Dipterygium, a synonym of a different species) that merely
+  // happens to carry the same label. Group by name first, then prefer whichever row is
+  // itself the accepted usage (no acceptedNameUsage of its own) rather than whichever an
+  // unordered query happens to return first for that name.
+  const byName = new Map();
+  for (const r of rows) (byName.get(r.name) || byName.set(r.name, []).get(r.name)).push(r);
+  for (const [name, group] of byName) {
+    const r = group.find(x => !x.accepted) || group[0];
+    map.set(name, {
       taxonUri: r.taxon,
       acceptedUri: r.accepted || r.taxon,
       isSynonym: !!r.accepted,
