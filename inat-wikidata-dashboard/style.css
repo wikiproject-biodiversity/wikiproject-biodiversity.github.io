@@ -158,6 +158,15 @@ button:disabled { opacity: 0.5; cursor: default; }
   margin: 8px 0 0;
 }
 
+.taxon-action-panel ul {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+}
+
+.taxon-action-panel ul li { margin-bottom: 4px; }
+.taxon-action-panel > div + div { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+
 .taxon-detail { margin: 20px 0; }
 
 .taxon-detail-header {
