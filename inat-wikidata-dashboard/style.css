@@ -308,6 +308,15 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); 
   width: 40px; height: 40px; border-radius: 6px; object-fit: cover; display: block; background: var(--border);
 }
 
+.photo-credit {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  text-decoration: none;
+  margin-top: 2px;
+}
+.photo-credit:hover { text-decoration: underline; }
+
 .taxon-name { font-style: italic; font-weight: 600; }
 .taxon-common { display: block; font-style: normal; font-weight: 400; color: var(--text-dim); font-size: 0.8rem; white-space: normal; }
 a.taxon-name { color: var(--text); text-decoration: none; }
