@@ -2113,10 +2113,7 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
     ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
     : '';
   const gbifMismatchBadge = t.wikidataGbifMismatch
-    ? ` <span class="pill" title="${t.wikidataGbifMismatch.kind === 'incomplete'
-        ? `This item has no parent taxon (P171) statement at all, but GBIF reports ${escapeHtml(t.wikidataGbifMismatch.expected)} at the equivalent rank.`
-        : `This item's parent taxon (P171) is ${escapeHtml(t.wikidataGbifMismatch.actual)}, but GBIF reports ${escapeHtml(t.wikidataGbifMismatch.expected)} at the equivalent rank.`
-      }">⚠ needs curation (vs GBIF)</span>`
+    ? ` <button class="small-btn gbifmismatch-btn" data-inat-id="${t.inatId}">⚠ needs curation (vs GBIF)</button>`
     : '';
   const wd = (!t.wikidata
     ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
@@ -2661,6 +2658,55 @@ function inatIdConflictDetail(t) {
     ${guidance}`;
 }
 
+// The badge alone only ever said "needs curation" with the actual comparison hidden in a
+// hover title — not discoverable, and this app otherwise always expands a clicked badge
+// into a persistent detail row instead. This builds that: the specific disagreement, a
+// search link either way, and — only for the "incomplete" case (no P171 at all) — a safe
+// QuickStatements addition if GBIF's expected parent resolves to exactly one Wikidata
+// item. Deliberately NOT offered for the "wrong" case: adding a second, disagreeing P171
+// value wouldn't fix anything, it would just create the same kind of multi-value conflict
+// already flagged elsewhere in this tool (see inatIdConflictDetail) — that one needs a
+// human correcting the existing statement on Wikidata directly, not another addition.
+async function gbifMismatchDetail(t) {
+  const m = t.wikidataGbifMismatch;
+  const wdLink = `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>`;
+  const searchLink = `<a href="https://www.wikidata.org/w/index.php?search=${encodeURIComponent(m.expected)}&ns0=1" target="_blank" rel="noopener">search Wikidata for "${escapeHtml(m.expected)}"</a>`;
+
+  if (m.kind === 'wrong') {
+    return `<em>${t.name}</em> — ${wdLink}'s parent taxon (<code>P171</code>) is currently
+      <em>${escapeHtml(m.actual)}</em>, but GBIF reports <em>${escapeHtml(m.expected)}</em> at the
+      equivalent rank. This tool won't propose changing an existing statement automatically —
+      adding a second, disagreeing <code>P171</code> value would just create a conflict, not fix
+      one. Check both classifications (a more specific but non-conflicting rank Wikidata models
+      and GBIF's flat fields don't is also possible, and not actually wrong) and correct
+      <code>P171</code> on Wikidata directly if GBIF is right. ${searchLink}.`;
+  }
+
+  const intro = `<em>${t.name}</em> — ${wdLink} has no parent taxon (<code>P171</code>) statement
+    at all, but GBIF reports the parent at the equivalent rank as <em>${escapeHtml(m.expected)}</em>.`;
+  let matches = [];
+  try {
+    matches = (await fetchWikidataItemsForNames([m.expected])).get(m.expected) || [];
+  } catch (e) { /* fall through to the manual-search note below */ }
+
+  if (matches.length !== 1) {
+    const note = matches.length === 0
+      ? `No Wikidata item found with that exact name — ${searchLink}, or check whether it's a synonym itself.`
+      : `${matches.length} different Wikidata items share that exact name — ambiguous, so no draft is offered. ${searchLink} and add <code>P171</code> to the right one manually.`;
+    return `${intro} ${note}`;
+  }
+
+  const commands = `${t.wikidata.qid}\tP171\t${matches[0]}\tS248\t${QS_REF_GBIF}`;
+  const id = `taxon-action-${taxonActionPanelSeq++}`;
+  return `${intro} <a href="https://www.wikidata.org/wiki/${matches[0]}" target="_blank" rel="noopener">${matches[0]}</a>
+    is the only Wikidata item with that name — proposed QuickStatements to add it as the parent taxon:
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${id}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
+}
+
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.inatconflict-btn');
   if (!btn) return;
@@ -2678,6 +2724,33 @@ document.addEventListener('click', (e) => {
   detailRow.className = 'bhl-row inatconflict-row';
   detailRow.innerHTML = `<td></td><td colspan="12">${inatIdConflictDetail(t)}</td>`;
   row.after(detailRow);
+});
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.gbifmismatch-btn');
+  if (!btn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(btn.dataset.inatId));
+  if (!t || !t.wikidataGbifMismatch) return;
+
+  const row = btn.closest('tr');
+  const nextRow = row.nextElementSibling;
+  if (nextRow && nextRow.classList.contains('gbifmismatch-row')) {
+    nextRow.remove();
+    return;
+  }
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'bhl-row gbifmismatch-row';
+  try {
+    detailRow.innerHTML = `<td></td><td colspan="12">${await gbifMismatchDetail(t)}</td>`;
+  } catch (err) {
+    detailRow.innerHTML = `<td></td><td colspan="12">Could not build details: ${err.message}</td>`;
+  }
+  row.after(detailRow);
+  btn.disabled = false;
+  btn.textContent = originalText;
 });
 
 document.addEventListener('click', async (e) => {
