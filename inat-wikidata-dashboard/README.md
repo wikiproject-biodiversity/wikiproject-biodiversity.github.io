@@ -303,6 +303,17 @@ the value (defaults to the project `biohackathon-2026`), and click **Load observ
       (`inatIdConflictDetail`), not fix anything — that case needs a human correcting the
       existing statement on Wikidata directly.
 
+      A second false-positive source, found the same way (a curator asking "is this
+      actually a homonym?" about a live flag): more than one GBIF record can share the
+      *exact same label* — "Cleome pallida" matches both the real accepted usage (genus
+      *Cleome*) and an unrelated synonym record (genus *Dipterygium*, itself a synonym of a
+      completely different species) that merely happens to carry the same label. `fetchGbifUsage`/
+      `fetchGbifUsagesForNames` used to take whichever row an unordered SPARQL query
+      returned first, which this time was the synonym — comparing Wikidata against the
+      wrong genus. Both now prefer whichever row is itself the accepted usage
+      (`taxonomicStatus`/absence of `acceptedNameUsage`) when a name matches more than one
+      GBIF record, verified against these exact rows.
+
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
 rather than one line per batch, so a large project (hundreds of taxa, dozens of batches
