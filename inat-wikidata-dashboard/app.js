@@ -2052,6 +2052,15 @@ function langBadge(t, code) {
   return `<button class="badge no stub-btn" data-inat-id="${t.inatId}" data-lang="${code}" title="No ${code} Wikipedia article — click to draft a stub">✗</button>`;
 }
 
+// The photographer's iNaturalist username, linked, shown under a thumbnail sourced from
+// `t.obsPhoto` — never under the generic taxon-wide fallback photo (buildTaxonRowCells),
+// since that photo has a different, unknown photographer and crediting it to this one
+// would be wrong.
+function photographerCredit(p) {
+  if (!p || !p.observerLogin) return '';
+  return `<a class="photo-credit" href="https://www.inaturalist.org/people/${encodeURIComponent(p.observerLogin)}" target="_blank" rel="noopener">${escapeHtml(p.observerLogin)}</a>`;
+}
+
 function renderImageCell(t) {
   const p = t.obsPhoto;
   if (!p) return '<span class="pill">no photo</span>';
@@ -2065,7 +2074,7 @@ function renderImageCell(t) {
   } else {
     status = `<button class="small-btn commons-btn" data-inat-id="${t.inatId}">prepare upload</button>`;
   }
-  return `<div class="image-cell">${thumb}${status}</div>`;
+  return `<div class="image-cell">${thumb}${photographerCredit(p)}${status}</div>`;
 }
 
 function renderTable() {
@@ -2097,7 +2106,9 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const photoTitle = usingObsPhoto
     ? 'Photo from an observation in this run'
     : (t.photo ? "iNaturalist's general default photo for this taxon — no photo found on any observation in this run" : '');
-  const photo = photoUrl ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">` : `<div class="thumb"></div>`;
+  const photo = photoUrl
+    ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">${usingObsPhoto ? photographerCredit(t.obsPhoto) : ''}`
+    : `<div class="thumb"></div>`;
   const wdLink = t.wikidata
     ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
     : '';
