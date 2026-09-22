@@ -1520,6 +1520,16 @@ function qsString(s) {
   return JSON.stringify(s); // QuickStatements string literals use the same "…" + backslash escaping as JSON
 }
 
+// One or more "stated in" references on a single statement, each source in its own
+// reference block: the first is a plain "S248\t<item>" pair, every one after it prefixed
+// "!S248" instead of "S248" — plain repeated S248 pairs on one line merge into snaks of a
+// *single* reference (wrong: reads as "one source claiming several qualifiers"), while "!"
+// starts a genuinely separate reference block per corroborating source. Confirmed against
+// QuickStatements' own docs and a real run before this was relied on for P171 below.
+function qsReferenceBlock(refQids) {
+  return refQids.map((refQid, i) => `${i === 0 ? 'S' : '!S'}248\t${refQid}`).join('\t');
+}
+
 async function fetchGbifMatch(name) {
   const res = await fetch(`https://api.gbif.org/v1/species/match?name=${encodeURIComponent(name)}&verbose=false`, {
     headers: { Accept: 'application/json' },
@@ -1738,30 +1748,45 @@ async function buildQuickStatements(t) {
   if (descParent) description += ` of ${descParent}`;
   if (t.commonName) description += ` (${t.commonName})`;
 
+  // Corroboration for the name/rank values, same idea as the P171 agreement check below:
+  // every linked source that independently backs the same value becomes its own reference
+  // on that statement, not just whichever one happened to be used to derive it.
+  const gbifNameMatches = !!(ctx.gbifMatch && ctx.gbifMatch.canonicalName &&
+    ctx.gbifMatch.canonicalName.toLowerCase() === t.name.toLowerCase());
+  const gbifRankMatches = !!(ctx.gbifMatch && ctx.gbifMatch.rank &&
+    ctx.gbifMatch.rank.toLowerCase() === (t.rank || '').toLowerCase());
+  const nameRefs = [QS_REF_INATURALIST];
+  if (gbifNameMatches) nameRefs.push(QS_REF_GBIF);
+  // fetchNcbiTaxonId only resolves when NCBI's esearch matched this exact scientific
+  // name, so a hit is itself confirmation of the name, not just an unrelated id lookup.
+  if (ctx.ncbiTaxonId) nameRefs.push(QS_REF_NCBI);
+  const rankRefs = [QS_REF_INATURALIST];
+  if (gbifRankMatches) rankRefs.push(QS_REF_GBIF);
+
   const lines = ['CREATE'];
+  // Not referenced: "instance of taxon" isn't a fact any of these databases assert, it's
+  // this tool's own modelling choice for every item it creates — there's nothing external
+  // to cite it to.
   lines.push(`LAST\tP31\tQ16521`); // instance of: taxon
-  if (rankQid) lines.push(`LAST\tP105\t${rankQid}`); // taxon rank
-  lines.push(`LAST\tP225\t${qsString(t.name)}`); // taxon name
+  if (rankQid) lines.push(`LAST\tP105\t${rankQid}\t${qsReferenceBlock(rankRefs)}`); // taxon rank
+  lines.push(`LAST\tP225\t${qsString(t.name)}\t${qsReferenceBlock(nameRefs)}`); // taxon name
   // `mul` (language-independent) alongside `en`: taxon names are identical across
   // languages, and Wikidata's "label in language constraint" flags an item with only
   // one language on it — this is the same en+mul pattern this org's own treatmentbot
   // uses on the taxa it creates (verified against Q130466854, Cutocoris distinctus).
+  // Labels/aliases/descriptions can't carry references in QuickStatements at all.
   lines.push(`LAST\tLen\t${qsString(t.name)}`);
   lines.push(`LAST\tLmul\t${qsString(t.name)}`);
   lines.push(`LAST\tAen\t${qsString(t.name)}`);
   lines.push(`LAST\tDen\t${qsString(description)}`);
   // Only write P171 when every lineage that resolved a parent agrees on the same item,
-  // with every agreeing source as its own separate reference block on that ONE
-  // statement line. Repeating the whole "LAST P171 …" line per source (what this used
-  // to do) instead creates duplicate statements — confirmed the hard way against a real
-  // batch. Plain repeated "S248" pairs on one line would merge into snaks of a *single*
-  // reference instead of separate ones; QuickStatements' documented fix is prefixing
-  // every reference group after the first with "!" instead of "S" to start a new group.
+  // with every agreeing source as its own separate reference block on that ONE statement
+  // line (repeating the whole "LAST P171 …" line per source, what this used to do,
+  // instead creates duplicate statements — confirmed the hard way against a real batch).
   // Divergent lineages are surfaced in the panel text instead of guessed at here.
   if (ctx.parentByQid.size === 1) {
     const [qid, sources] = [...ctx.parentByQid.entries()][0];
-    const refPairs = sources.map((c, i) => `${i === 0 ? 'S' : '!S'}248\t${c.refQid}`).join('\t');
-    lines.push(`LAST\tP171\t${qid}\t${refPairs}`);
+    lines.push(`LAST\tP171\t${qid}\t${qsReferenceBlock(sources.map(c => c.refQid))}`);
   }
   lines.push(`LAST\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`);
   if (ctx.gbifMatch && ctx.gbifMatch.usageKey && ctx.gbifMatch.matchType && ctx.gbifMatch.matchType !== 'NONE') {
