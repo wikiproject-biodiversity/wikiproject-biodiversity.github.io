@@ -3276,7 +3276,15 @@ function renderIdentityPanel() {
     <div id="${rowId}-panel"></div>`;
 }
 
-function showIdentityQsDraft(commands, label) {
+// `anchorBtn` is the button that opened this draft — clicking it again (or the ✕ Cancel
+// button inside the draft itself) closes this exact panel instead of leaving it stacked
+// alongside a second copy, which is what plain unconditional appendChild used to do.
+function showIdentityQsDraft(anchorBtn, commands, label) {
+  if (anchorBtn._draftPanel) {
+    anchorBtn._draftPanel.remove();
+    anchorBtn._draftPanel = null;
+    return;
+  }
   const rowId = `identity-textarea-${Date.now()}`;
   const panel = document.createElement('div');
   panel.className = 'identity-row';
@@ -3286,10 +3294,16 @@ function showIdentityQsDraft(commands, label) {
     <div class="stub-toolbar">
       <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
       <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      <button class="small-btn identity-cancel-btn">✕ Cancel</button>
     </div>
     <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
   </div>`;
+  panel.querySelector('.identity-cancel-btn').addEventListener('click', () => {
+    panel.remove();
+    anchorBtn._draftPanel = null;
+  });
   identityPanelEl.appendChild(panel);
+  anchorBtn._draftPanel = panel;
 }
 
 identityPanelEl.addEventListener('click', (e) => {
@@ -3302,13 +3316,13 @@ identityPanelEl.addEventListener('click', (e) => {
   if (addBtn) {
     const qid = addBtn.dataset.qid;
     const commands = builder(record, 'add', qid);
-    showIdentityQsDraft(commands, `Adds the iNaturalist identifier to <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>:`);
+    showIdentityQsDraft(addBtn, commands, `Adds the iNaturalist identifier to <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>:`);
   } else {
     const commands = builder(record, 'create', null);
     const hint = scopeType === 'user'
       ? ' — review notability before using this; being an iNaturalist contributor alone is not enough'
       : ' — for the iNaturalist project itself, described as such so it isn\'t confused with any broader event/campaign of the same name';
-    showIdentityQsDraft(commands, `Draft to create a new Wikidata item${hint}:`);
+    showIdentityQsDraft(createBtn, commands, `Draft to create a new Wikidata item${hint}:`);
   }
 });
 
