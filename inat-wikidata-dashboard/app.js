@@ -1978,6 +1978,157 @@ scopeTypeSelect.addEventListener('change', () => {
   projectInputLabel.textContent = cfg.label;
   projectInput.value = cfg.example;
   osmRadiusRow.hidden = scopeTypeSelect.value !== 'osm';
+  hideScopeAutocomplete();
+});
+
+// ---------- Scope autocomplete ----------
+// Searches the actual source (iNaturalist for project/user, Nominatim for OSM) as the
+// user types, so the free-text scope field doesn't require already knowing a slug/login/
+// OSM id up front. Each search function returns {label, sub, value} rows, where `value`
+// is exactly what fetchScopedTaxa's scopeType branch expects in projectInput.
+
+async function searchProjectsForAutocomplete(q, signal) {
+  const res = await fetch(`${INAT_API}/projects?q=${encodeURIComponent(q)}&per_page=8`, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`iNaturalist projects search HTTP ${res.status}`);
+  const json = await res.json();
+  return (json.results || []).map(r => ({
+    label: r.title,
+    sub: [r.slug, r.place ? r.place.display_name : null].filter(Boolean).join(' · '),
+    value: r.slug || String(r.id),
+  }));
+}
+
+async function searchUsersForAutocomplete(q, signal) {
+  const res = await fetch(`${INAT_API}/users/autocomplete?q=${encodeURIComponent(q)}&per_page=8`, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`iNaturalist users search HTTP ${res.status}`);
+  const json = await res.json();
+  return (json.results || []).map(r => ({
+    label: r.login,
+    sub: r.name || '',
+    value: r.login,
+  }));
+}
+
+async function searchOsmForAutocomplete(q, signal) {
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&q=${encodeURIComponent(q)}`;
+  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`Nominatim search HTTP ${res.status}`);
+  const json = await res.json();
+  return (json || [])
+    .filter(r => ['node', 'way', 'relation'].includes(r.osm_type))
+    .map(r => ({
+      label: r.display_name,
+      sub: `${r.osm_type}/${r.osm_id} — ${r.type || r.category || ''}`.trim(),
+      value: `${r.osm_type}/${r.osm_id}`,
+    }));
+}
+
+const SCOPE_AUTOCOMPLETE_SEARCH = {
+  project: searchProjectsForAutocomplete,
+  user: searchUsersForAutocomplete,
+  osm: searchOsmForAutocomplete,
+};
+
+const scopeAutocompleteEl = document.getElementById('scopeAutocomplete');
+let scopeAutocompleteAbort = null;
+let scopeAutocompleteDebounce = null;
+let scopeAutocompleteRows = [];
+
+function hideScopeAutocomplete() {
+  scopeAutocompleteEl.hidden = true;
+  scopeAutocompleteEl.innerHTML = '';
+  scopeAutocompleteRows = [];
+  if (scopeAutocompleteAbort) scopeAutocompleteAbort.abort();
+}
+
+function renderScopeAutocomplete(items) {
+  scopeAutocompleteRows = items;
+  scopeAutocompleteEl.innerHTML = items.map((it, i) => `
+    <li data-index="${i}">
+      <span>${escapeHtml(it.label)}</span>
+      ${it.sub ? `<span class="ac-sub">${escapeHtml(it.sub)}</span>` : ''}
+    </li>
+  `).join('');
+  scopeAutocompleteEl.hidden = false;
+}
+
+function renderScopeAutocompleteMessage(text, cls) {
+  scopeAutocompleteRows = [];
+  scopeAutocompleteEl.innerHTML = `<li class="${cls}">${escapeHtml(text)}</li>`;
+  scopeAutocompleteEl.hidden = false;
+}
+
+projectInput.addEventListener('input', () => {
+  const q = projectInput.value.trim();
+  clearTimeout(scopeAutocompleteDebounce);
+  if (scopeAutocompleteAbort) scopeAutocompleteAbort.abort();
+  if (q.length < 2) {
+    hideScopeAutocomplete();
+    return;
+  }
+  scopeAutocompleteDebounce = setTimeout(async () => {
+    const search = SCOPE_AUTOCOMPLETE_SEARCH[scopeTypeSelect.value];
+    if (!search) return;
+    renderScopeAutocompleteMessage('Searching…', 'ac-loading');
+    scopeAutocompleteAbort = new AbortController();
+    try {
+      const items = await search(q, scopeAutocompleteAbort.signal);
+      if (!items.length) {
+        renderScopeAutocompleteMessage('No matches.', 'ac-empty');
+        return;
+      }
+      renderScopeAutocomplete(items);
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      renderScopeAutocompleteMessage(`Search failed: ${err.message}`, 'ac-empty');
+    }
+  }, 300);
+});
+
+scopeAutocompleteEl.addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-index]');
+  if (!li) return;
+  const item = scopeAutocompleteRows[Number(li.dataset.index)];
+  if (!item) return;
+  projectInput.value = item.value;
+  hideScopeAutocomplete();
+  projectInput.focus();
+});
+
+projectInput.addEventListener('keydown', (e) => {
+  if (scopeAutocompleteEl.hidden) return;
+  const options = [...scopeAutocompleteEl.querySelectorAll('li[data-index]')];
+  if (!options.length) {
+    if (e.key === 'Escape') hideScopeAutocomplete();
+    return;
+  }
+  const activeIdx = options.findIndex(o => o.classList.contains('active'));
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const next = options[Math.min(activeIdx + 1, options.length - 1)];
+    options.forEach(o => o.classList.remove('active'));
+    next.classList.add('active');
+    next.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const prev = options[Math.max(activeIdx - 1, 0)];
+    options.forEach(o => o.classList.remove('active'));
+    prev.classList.add('active');
+    prev.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    // Stop this Enter from also reaching the run-on-Enter handler further down —
+    // picking a suggestion shouldn't also immediately kick off the search.
+    const chosen = activeIdx >= 0 ? options[activeIdx] : options[0];
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    chosen.click();
+  } else if (e.key === 'Escape') {
+    hideScopeAutocomplete();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.autocomplete-field')) hideScopeAutocomplete();
 });
 
 let currentTaxa = [];
