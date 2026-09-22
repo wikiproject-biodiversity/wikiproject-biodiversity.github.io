@@ -34,9 +34,12 @@
       <option value="osm">OSM area</option>
     </select>
   </label>
-  <label>
+  <label class="autocomplete-field">
     <span id="projectInputLabel">iNaturalist project slug or numeric ID</span>
-    <input id="projectInput" type="text" value="biohackathon-2026" spellcheck="false">
+    <div class="autocomplete-wrap">
+      <input id="projectInput" type="text" value="biohackathon-2026" spellcheck="false" autocomplete="off">
+      <ul id="scopeAutocomplete" class="autocomplete-list" hidden></ul>
+    </div>
   </label>
   <label id="osmRadiusRow" hidden>
     <span>Radius (km, node only)</span>
@@ -151,7 +154,13 @@
           entered alongside the reference. Everything downstream of this step is identical no
           matter which scope was used — this is the first step towards scoping the whole
           dashboard to a real-world area (a park, a town, a bioblitz perimeter) rather than only
-          an iNaturalist project or user.
+          an iNaturalist project or user. The scope field itself autocompletes against the real
+          source as you type (debounced, 2+ characters): iNaturalist's own
+          <code>/projects</code>/<code>/users/autocomplete</code> search for
+          <strong>Project</strong>/<strong>User</strong>, and
+          <a href="https://nominatim.openstreetmap.org" target="_blank" rel="noopener">Nominatim</a>
+          for <strong>OSM area</strong> — so a suggestion's machine-readable value (slug, login, or
+          <code>type/id</code>) lands in the field with no need to already know it.
         </li>
         <li>
           <strong>Comunica → QLever's Wikidata mirror, live WDQS as a fallback</strong> — a fast
