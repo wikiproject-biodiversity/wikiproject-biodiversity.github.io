@@ -945,7 +945,11 @@ async function buildSynonymyInfo(t, ctx) {
       const sitelinks = await fetchSitelinksForQids(allQids);
       const linkCheckQids = t.wikidata ? [...new Set([...allQids, t.wikidata.qid])] : allQids;
       const synLinks = await fetchTaxonSynonymLinks(linkCheckQids);
-      info.synonyms = { names: synonymNames, rankByName, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
+      // Needed for the "create a new item" batch commands below (each synonym's own
+      // P105) — fetched here (cached after the first call, so later panels are free)
+      // rather than making synonymyPanel() itself async just for this.
+      const rankQids = await getTaxonomicRankQids().catch(() => new Map());
+      info.synonyms = { names: synonymNames, rankByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
     }
   } catch (e) { info.synonymsError = e.message; }
 
@@ -977,7 +981,7 @@ function synonymyPanel(t, info) {
   }
 
   if (info.synonyms) {
-    const { names, rankByName, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
+    const { names, rankByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
     const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
     const withArticleNames = [];
     let rescue = null;
@@ -992,17 +996,40 @@ function synonymyPanel(t, info) {
     // montana (species)" apart from "Alchemilla mollis aprica (variety)" at a glance,
     // instead of every synonym reading as if it were at the same rank as the taxon itself.
     const rankLabel = (rank) => rank ? ` <span class="rank-label">(${escapeHtml(rank)})</span>` : ' <span class="rank-label">(rank unknown)</span>';
+    // Collected while building rows below, for the single "do everything in this list at
+    // once" batch — the per-row buttons still exist for cherry-picking just one fix.
+    const linkLines = []; // existing-but-unlinked synonym items: one `P1420` add per line
+    const createBlocks = []; // synonym names with no Wikidata item at all: one full CREATE per block
     const rows = names.map(name => {
       const rank = rankByName ? rankByName.get(name) : null;
       const qids = wdMatches.get(name) || [];
-      if (!qids.length) return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata</li>`;
+      if (!qids.length) {
+        if (canProposeAcceptedQid) {
+          const rankQid = rank ? rankQids.get(rank) : null;
+          const block = ['CREATE'];
+          block.push(`LAST\tP31\tQ16521`); // instance of: taxon — see buildQuickStatements for why this stays unreferenced
+          if (rankQid) block.push(`LAST\tP105\t${rankQid}\tS248\t${QS_REF_GBIF}`);
+          block.push(`LAST\tP225\t${qsString(name)}\tS248\t${QS_REF_GBIF}`);
+          block.push(`LAST\tLen\t${qsString(name)}`);
+          block.push(`LAST\tLmul\t${qsString(name)}`);
+          block.push(`LAST\tAen\t${qsString(name)}`);
+          block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym of ${t.name}`)}`);
+          // The one statement this draft is actually confident about: GBIF already told us
+          // this name is a synonym of the accepted usage this taxon resolved to.
+          block.push(`LAST\tP1420\t${t.wikidata.qid}\tS248\t${QS_REF_GBIF}`);
+          createBlocks.push(block.join('\n'));
+        }
+        return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata</li>`;
+      }
       return qids.map(qid => {
         const langs = sitelinks.get(qid) || {};
         const withArticle = LANGS.filter(l => langs[l.code]);
         if (withArticle.length) withArticleNames.push({ name, langs: withArticle.map(l => l.code) });
         const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
         if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
-        const linkBtn = (!isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid)
+        const canLink = !isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid;
+        if (canLink) linkLines.push(`${qid}\tP1420\t${t.wikidata.qid}\tS248\t${QS_REF_GBIF}`);
+        const linkBtn = canLink
           ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}">propose QuickStatements</button>`
           : '';
         return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>${rankLabel(rank)}` +
@@ -1019,10 +1046,27 @@ function synonymyPanel(t, info) {
     const articleLangSummary = withArticleNames.length
       ? ` (${withArticleNames.map(a => a.langs.join('/')).join(', ')})`
       : '';
+    const batchCount = linkLines.length + createBlocks.length;
+    const batchSection = batchCount
+      ? (() => {
+          const batchId = `synonym-batch-qs-${taxonActionPanelSeq++}`;
+          const parts = [];
+          if (linkLines.length) parts.push(`link ${linkLines.length} existing item${linkLines.length === 1 ? '' : 's'} (P1420)`);
+          if (createBlocks.length) parts.push(`create ${createBlocks.length} new item${createBlocks.length === 1 ? '' : 's'}`);
+          return `<p><strong>Fix all of the above at once</strong> — ${parts.join(' and ')}, one QuickStatements batch:</p>
+            <div class="stub-toolbar">
+              <button class="small-btn copy-stub-btn" data-target="${batchId}">Copy commands</button>
+              <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+            </div>
+            <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${[...linkLines, ...createBlocks].join('\n')}</textarea>
+            <p class="identity-note">New items are drafts — review each one for notability and near-duplicates before running, same as any other <code>CREATE</code> this tool proposes.</p>`;
+        })()
+      : '';
     sections.push(`<div class="synonymy-list-section"><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article${articleLangSummary}.
       ${gbifNote}
       ${names.length ? `<ul>${rows}</ul>` : ''}
       ${rescueNote}
+      ${batchSection}
     </div>`);
   } else if (info.synonymsError) {
     sections.push(`<div><strong>Synonyms</strong> — could not check: ${escapeHtml(info.synonymsError)}</div>`);
