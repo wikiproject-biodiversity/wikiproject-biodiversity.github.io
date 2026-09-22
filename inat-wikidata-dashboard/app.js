@@ -8,6 +8,7 @@ const BHL_ENDPOINT = 'https://koetai.semscape.org/u/0000-0001-9773-4008/bhl/spar
 const PLAZI_ENDPOINT = 'https://qlever.ld.plazi.org/sparql'; // SynoSpecies' QLever mirror of Plazi TreatmentBank
 const COMMONS_ENDPOINT = 'https://qlever.dev/api/wikimedia-commons'; // QLever's Wikimedia Commons structured-data mirror
 const GBIF_ENDPOINT = 'https://qlever.dev/api/gbif'; // QLever's GBIF backbone mirror (Darwin Core RDF), used for synonym/homonym lookups
+const OSM_ENDPOINT = 'https://overpass-api.de/api/interpreter'; // main Overpass API instance
 
 // iNaturalist license codes that are actually reusable on Commons (public domain / attribution-only).
 // cc-by-nc, cc-by-nd, cc-by-nc-sa, cc-by-nc-nd and "all rights reserved" (null) are NOT Commons-compatible.
@@ -162,21 +163,79 @@ function splitBinomial(name) {
   return null;
 }
 
+// ---------- OSM (Overpass) ----------
+
+// Accepts, in any of these shapes: "way/357192273", "relation/47015", "node/240109189",
+// short forms "w357192273"/"r47015"/"n240109189", a bare openstreetmap.org URL
+// (.../way/357192273, optionally with a #map=... fragment), or a plain number paired
+// with an explicit type already picked elsewhere — but since this tool only has one
+// free-text field, a plain number without a type prefix is rejected rather than guessed.
+function parseOsmReference(value) {
+  const v = (value || '').trim();
+  const TYPES = { node: 'node', way: 'way', relation: 'relation', n: 'node', w: 'way', r: 'relation' };
+  let m = v.match(/openstreetmap\.org\/(node|way|relation)\/(\d+)/i);
+  if (!m) m = v.match(/^(node|way|relation|n|w|r)[\s/:]+(\d+)$/i);
+  if (!m) m = v.match(/^(node|way|relation|n|w|r)(\d+)$/i);
+  if (!m) {
+    throw new Error(`"${value}" isn't a recognized OSM reference — use e.g. "way/357192273", "relation/47015", "node/240109189", or an openstreetmap.org URL.`);
+  }
+  return { type: TYPES[m[1].toLowerCase()], id: m[2] };
+}
+
+// Resolves an OSM node to a point (iNaturalist search then needs a radius, since a node
+// alone has no area) and a way/relation to its bounding box (`out bb;` puts a `bounds`
+// object straight on the element — verified live against overpass.kumi.systems).
+async function fetchOsmBoundingBox(ref) {
+  const query = ref.type === 'node'
+    ? `[out:json][timeout:25];node(${ref.id});out;`
+    : `[out:json][timeout:25];${ref.type}(${ref.id});out bb;`;
+  const res = await fetch(OSM_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `data=${encodeURIComponent(query)}`,
+  });
+  if (!res.ok) throw new Error(`Overpass API HTTP ${res.status} while resolving OSM ${ref.type}/${ref.id}.`);
+  const json = await res.json();
+  const el = (json.elements || [])[0];
+  if (!el) throw new Error(`OSM ${ref.type}/${ref.id} not found.`);
+  if (ref.type === 'node') {
+    if (typeof el.lat !== 'number' || typeof el.lon !== 'number') throw new Error(`OSM node/${ref.id} has no coordinates.`);
+    return { kind: 'point', lat: el.lat, lng: el.lon };
+  }
+  if (!el.bounds) throw new Error(`OSM ${ref.type}/${ref.id} has no resolvable bounding box (it may be a relation with no geometry members).`);
+  return { kind: 'bbox', swlat: el.bounds.minlat, swlng: el.bounds.minlon, nelat: el.bounds.maxlat, nelng: el.bounds.maxlon };
+}
+
 // ---------- iNaturalist ----------
 
-// scopeType: 'project' (iNaturalist project slug/id) or 'user' (iNaturalist login/id) —
-// both accept either a slug/login string or a numeric id interchangeably via the same
-// REST param shape (project_id= / user_id=), so this only needs to pick the param name.
-async function fetchScopedTaxa(scopeType, scopeValue, onProgress) {
-  const param = scopeType === 'user' ? 'user_id' : 'project_id';
-  const noun = scopeType === 'user' ? 'user' : 'project';
+// scopeType: 'project' (iNaturalist project slug/id), 'user' (iNaturalist login/id), or
+// 'osm' (a node/way/relation ID resolved geographically via Overpass, searched against
+// iNaturalist's own bounding-box/radius params — verified live to return correctly-bounded
+// results). Project/user accept either a slug/login string or a numeric id interchangeably
+// via the same REST param shape (project_id= / user_id=).
+async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
+  let queryParams;
+  let noun;
+  if (scopeType === 'osm') {
+    noun = 'OSM area';
+    const ref = parseOsmReference(scopeValue);
+    const bounds = await fetchOsmBoundingBox(ref);
+    queryParams = bounds.kind === 'point'
+      ? `lat=${bounds.lat}&lng=${bounds.lng}&radius=${osmRadiusKm || 10}`
+      : `swlat=${bounds.swlat}&swlng=${bounds.swlng}&nelat=${bounds.nelat}&nelng=${bounds.nelng}`;
+  } else {
+    const param = scopeType === 'user' ? 'user_id' : 'project_id';
+    noun = scopeType === 'user' ? 'user' : 'project';
+    queryParams = `${param}=${encodeURIComponent(scopeValue)}`;
+  }
+
   const observations = [];
   let page = 1;
   const perPage = 200;
   while (observations.length < MAX_OBSERVATIONS) {
-    const url = `${INAT_API}/observations?${param}=${encodeURIComponent(scopeValue)}&per_page=${perPage}&page=${page}&order_by=id`;
+    const url = `${INAT_API}/observations?${queryParams}&per_page=${perPage}&page=${page}&order_by=id`;
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : 'slug/id'}?)`);
+    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : scopeType === 'osm' ? 'reference' : 'slug/id'}?)`);
     const json = await res.json();
     if (page === 1 && json.total_results === 0) {
       throw new Error(`No observations found for ${noun} "${scopeValue}".`);
@@ -1884,6 +1943,8 @@ const runBtn = document.getElementById('runBtn');
 const scopeTypeSelect = document.getElementById('scopeType');
 const projectInput = document.getElementById('projectInput');
 const projectInputLabel = document.getElementById('projectInputLabel');
+const osmRadiusRow = document.getElementById('osmRadiusRow');
+const osmRadiusInput = document.getElementById('osmRadiusInput');
 const statsEl = document.getElementById('stats');
 const filtersEl = document.getElementById('filters');
 const tableWrapEl = document.getElementById('tableWrap');
@@ -1910,11 +1971,13 @@ let gbifCrossCheckDone = false;
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
   user: { label: 'iNaturalist username or numeric ID', example: 'andrawaag' },
+  osm: { label: 'OSM node/way/relation ID or URL', example: 'relation/47015' },
 };
 scopeTypeSelect.addEventListener('change', () => {
   const cfg = SCOPE_PLACEHOLDERS[scopeTypeSelect.value];
   projectInputLabel.textContent = cfg.label;
   projectInput.value = cfg.example;
+  osmRadiusRow.hidden = scopeTypeSelect.value !== 'osm';
 });
 
 let currentTaxa = [];
@@ -3147,10 +3210,11 @@ function updateBulkInatIdAction(count) {
 }
 
 async function run() {
-  const scopeType = scopeTypeSelect.value; // 'project' or 'user'
+  const scopeType = scopeTypeSelect.value; // 'project', 'user', or 'osm'
   const scopeValue = projectInput.value.trim();
   if (!scopeValue) return;
-  const noun = scopeType === 'user' ? 'user' : 'project';
+  const osmRadiusKm = Number(osmRadiusInput.value) || 10;
+  const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : 'project';
   runBtn.disabled = true;
   statusSpinnerEl.hidden = false;
   statusHeaderTextEl.textContent = '';
@@ -3174,7 +3238,8 @@ async function run() {
 
   // Independent of the taxa pipeline below (it's about the scope itself, not the
   // species observed in it), so it runs concurrently rather than blocking on it.
-  checkIdentityLinking(scopeType, scopeValue);
+  // Doesn't apply to an OSM area — there's no iNaturalist project/user record to link.
+  if (scopeType !== 'osm') checkIdentityLinking(scopeType, scopeValue);
 
   // A step count the user can see progress against, however imprecise any single step's
   // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
@@ -3186,7 +3251,7 @@ async function run() {
     setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"…`));
     const taxa = await fetchScopedTaxa(scopeType, scopeValue, (n, total) => {
       setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`));
-    });
+    }, osmRadiusKm);
     log(`${taxa.length} distinct taxa found.`);
 
     setStatusHeader(step(2, `Resolving ${taxa.length} taxa against Wikidata (via Comunica → QLever)…`));
