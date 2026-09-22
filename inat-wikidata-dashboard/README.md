@@ -20,14 +20,24 @@ imports and the SPARQL fetches to behave):
 python3 -m http.server 8734
 ```
 
-Then open <http://localhost:8734/>, pick **Project** or **User** as the scope, confirm/change
-the value (defaults to the project `biohackathon-2026`), and click **Load observations**.
+Then open <http://localhost:8734/>, pick **Project**, **User**, or **OSM area** as the scope,
+confirm/change the value (defaults to the project `biohackathon-2026`), and click
+**Load observations**.
 
 ## How it works
 
-1. **iNaturalist REST API** — paginates through every observation in the chosen project or by
-   the chosen user (`project_id=` / `user_id=`, both accept either a slug/login or a numeric id)
-   and collects the distinct taxa (scientific name, common name, photo, observation count).
+1. **iNaturalist REST API** — paginates through every observation in the chosen scope and
+   collects the distinct taxa (scientific name, common name, photo, observation count). For
+   **Project**/**User**, that's `project_id=` / `user_id=` (both accept either a slug/login or
+   a numeric id). For **OSM area**, the entered OSM node/way/relation ID (or full
+   openstreetmap.org URL) is first resolved geographically via the
+   [Overpass API](https://overpass-api.de/api/interpreter) — a way or relation resolves to its
+   bounding box (`out bb;`) and is searched with iNaturalist's `swlat`/`swlng`/`nelat`/`nelng`
+   params; a node has no area of its own, so it's searched with `lat`/`lng`/`radius` instead,
+   using the radius (km) entered alongside the reference. From here on the pipeline is
+   identical regardless of scope — this is the first step towards letting a wikiblitz
+   organiser scope the whole dashboard to a real-world area (a park, a town, a bioblitz
+   perimeter) rather than only an iNaturalist project or user.
 2. **Comunica → [QLever](https://qlever.cs.uni-freiburg.de/wikidata)'s Wikidata
    mirror, live WDQS as a fallback** — resolves each scientific name to a Wikidata item
    (`wdt:P225`) and reads off cross-reference identifiers already stored there: GBIF
