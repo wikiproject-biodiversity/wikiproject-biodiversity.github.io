@@ -2374,9 +2374,16 @@ function stubReadiness(t) {
 
 // Matched item, no P3151 conflict on it, but not yet linked to THIS taxon's id — the
 // safe-to-bulk-add case. Excludes the conflict case on purpose: adding a third value to
-// an item that already has two is how you get more mess, not less.
+// an item that already has two is how you get more mess, not less. Also excludes an
+// ambiguous match: when multiple Wikidata items share this scientific name (a real
+// homonym, not the stray-Lexeme-Sense artifact filtered out elsewhere), `t.wikidata` is
+// only this tool's *best guess* among them — proposing to add P3151 there would assert a
+// specific identifier link on an item this tool isn't actually sure is the right one. The
+// curation page already refuses this case for the exact same reason (its own "ambiguous
+// match" panel comes before its "missing iNat ID" one); this was the one place that
+// didn't, so a bulk or single "link iNat ID" action could silently link the wrong homonym.
 function inatIdMissing(t) {
-  return !!t.wikidata && !t.wikidataInatIdConflict && !inatIdLinked(t);
+  return !!t.wikidata && !t.wikidataAmbiguous && !t.wikidataInatIdConflict && !inatIdLinked(t);
 }
 
 function matchesFilter(t) {
@@ -2480,7 +2487,13 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
       ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
       : inatIdLinked(t)
         ? wdLink
-        : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`
+        // No "link iNat ID" button when the match itself is ambiguous — same reasoning as
+        // inatIdMissing() above: this tool doesn't know if `t.wikidata` is even the right
+        // item yet, so it shouldn't offer to assert a P3151 link on it. The "no iNat ID"
+        // pill still shows (still true, still useful to know), just without the action.
+        : t.wikidataAmbiguous
+          ? `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId} — but resolve the ambiguous match first, this tool isn't sure this is even the right item">⚠ no iNat ID</span>`
+          : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`
   ) + gbifMismatchBadge;
   const gbif = t.wikidata && t.wikidata.gbif
     ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
@@ -3094,7 +3107,12 @@ async function inatIdConflictDetail(t) {
         </div>
         <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
         Once that new item exists and looks right, remove the misplaced <code>P3151</code> = ${child.id} statement
-        from ${t.wikidata.qid} itself (manually — this tool never removes statements).
+        from ${t.wikidata.qid} itself (manually — this tool never removes statements). Note this deliberately
+        creates a second Wikidata item with the exact same scientific name — expected for a genuine autonym, not
+        a homonym problem to avoid. Once both items carry their own correct <code>P3151</code>, this tool's usual
+        homonym handling still disambiguates correctly between them by iNaturalist id on later runs; only the
+        cosmetic "⚠ ambiguous" pill will keep showing for this name, since it can't tell "expected autonym" apart
+        from a real naming collision just from the count.
       </p>`;
     }
   } catch (e) { /* informational extra only — the base conflict listing above still stands without it */ }
@@ -3395,7 +3413,7 @@ document.addEventListener('click', (e) => {
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
   const t = currentTaxa.find(x => x.inatId === inatId);
-  if (!t || !t.wikidata) return;
+  if (!t || !t.wikidata || t.wikidataAmbiguous) return;
 
   const row = btn.closest('tr');
   const qsRow = row.nextElementSibling;
