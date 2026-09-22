@@ -142,6 +142,11 @@ header h1 {
   color: var(--text-dim);
 }
 
+.rank-label {
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+
 .autocomplete-list li:hover,
 .autocomplete-list li.active {
   background: var(--warn-bg);
