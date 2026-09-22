@@ -21,8 +21,10 @@ python3 -m http.server 8734
 ```
 
 Then open <http://localhost:8734/>, pick **Project**, **User**, or **OSM area** as the scope,
-confirm/change the value (defaults to the project `biohackathon-2026`), and click
-**Load observations**.
+type into the scope field (autocomplete searches the actual source as you type — iNaturalist's
+project/user search for those two scopes, [Nominatim](https://nominatim.openstreetmap.org) for
+OSM area — so you don't need to already know a slug/login/OSM id), pick a suggestion or leave
+your own value, and click **Load observations**.
 
 ## How it works
 
