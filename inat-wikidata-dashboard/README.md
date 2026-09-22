@@ -61,8 +61,17 @@ your own value, and click **Load observations**.
    item might still lack `P3151` back to this exact iNaturalist taxon (added by someone
    else, from a different source, before this tool existed). The **Wikidata** column
    flags that case (⚠ no iNat ID) with a one-line QuickStatements action to add just the
-   missing statement — no need for the full `CREATE` draft an unmatched taxon gets — and
-   it has its own stat card and filter ("WD item, no iNat ID") so it doesn't get lost
+   missing statement — no need for the full `CREATE` draft an unmatched taxon gets — but
+   only when the match itself is unambiguous (`inatIdMissing()` excludes
+   `t.wikidataAmbiguous`): when multiple Wikidata items share this exact scientific name (a
+   real homonym), `t.wikidata` is only this tool's best guess among them, and proposing to
+   *add* a P3151 link would assert a specific identifier on an item this tool isn't actually
+   sure is the right one — a worse outcome than just leaving it unlinked. The "⚠ no iNat ID"
+   pill still shows in that case (still true, still useful to know), just without the
+   actionable button — same treatment the curation page's ambiguous-match panel already
+   gave this exact situation; the single-row and bulk "link iNat ID" actions were the one
+   place that hadn't caught up to it. It has its own stat card and filter ("WD item, no iNat
+   ID") so it doesn't get lost
    among the Wikipedia-coverage numbers, which are a separate concern. The opposite data
    problem — an item carrying *two or more* different `P3151` values (an old iNaturalist
    taxon id left behind after a merge/split, say) — gets its own flag too (⚠ N iNat IDs —
