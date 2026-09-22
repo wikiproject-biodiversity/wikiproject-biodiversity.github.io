@@ -66,9 +66,22 @@ your own value, and click **Load observations**.
    among the Wikipedia-coverage numbers, which are a separate concern. The opposite data
    problem — an item carrying *two or more* different `P3151` values (an old iNaturalist
    taxon id left behind after a merge/split, say) — gets its own flag too (⚠ N iNat IDs —
-   needs review), but deliberately no automated fix: this tool only ever proposes
-   *additions*, and deciding which of several existing statements is the stale one to
-   remove needs a curator checking iNaturalist directly, not a guess.
+   needs review). Usually no automated fix: this tool only ever proposes *additions*, and
+   deciding which of several existing statements is the stale one to remove needs a curator
+   checking iNaturalist directly, not a guess — **except** one specific, safe pattern it
+   *can* fix (`detectAutonymConflict()`): iNaturalist and Wikidata sometimes carry the exact
+   same scientific name at two adjacent ranks — an "autonym", e.g. genus *Ajuga* and its own
+   type section, both literally named "Ajuga" (found live: `Q158472` carries both ids, with
+   no separate item for the section at all). Wikidata's exact-name matching can't tell those
+   two concepts apart, so both ids end up parked on one item. Detected by checking whether
+   the two conflicting ids form a direct parent/child pair in iNaturalist's own ancestry
+   *and* whether the item's own `P105` rank already matches the parent side of that pair —
+   if so, the "stale" id isn't a duplicate to delete at all, it's a genuinely separate taxon
+   concept with no item of its own yet, and a `CREATE` draft is offered for it (`P171`
+   pointing back at the existing item — a pure addition, the existing item's own statements
+   are never touched). Deliberately narrow: only fires on a clean two-id conflict with an
+   unambiguous rank match: anything less certain falls back to the plain redirect-check
+   guidance above, same as before.
 3. **Same QLever-first, WDQS-fallback pattern for sitelinks** — checks, for every
    resolved item, whether an `en`/`ja`/`es`/`pt` Wikipedia sitelink exists
    (`schema:about` / `schema:isPartOf`) — the "not listed" signal this dashboard exists
@@ -270,12 +283,18 @@ your own value, and click **Load observations**.
     the bulk pipeline, generalized past just the first row).
     - **Synonyms**: every synonym GBIF records for the taxon's accepted usage
       (`fetchGbifSynonyms()`, via GBIF's `gbifv:acceptedNameUsage` — reversed, since that
-      property points *from* a synonym record *to* its accepted one), cross-checked
-      against Wikidata for an exact `P225` name match and, for any that resolve, whether
-      it has a Wikipedia article and whether it's formally linked back with `P1420`
-      ("taxon synonym", checked in both directions — which side carries the statement
-      varies in practice) rather than just coincidentally sharing a name. Reports the
-      count on each side (GBIF / also-on-Wikidata / with-a-Wikipedia-article). If the
+      property points *from* a synonym record *to* its accepted one — also fetching each
+      synonym's own `dwc:taxonRank`, shown next to its name so an infraspecific synonym
+      like "Alchemilla mollis aprica" (variety) doesn't read the same as a full-species one
+      like "Alchemilla montana" — rank isn't always populated on every GBIF record, so a
+      missing one is labelled "rank unknown" rather than guessed), cross-checked against
+      Wikidata for an exact `P225` name match and, for any that resolve, whether it has a
+      Wikipedia article (and in which language — `en`/`ja`/`es`/`pt`, named explicitly, not
+      just counted) and whether it's formally linked back with `P1420` ("taxon synonym",
+      checked in both directions — which side carries the statement varies in practice)
+      rather than just coincidentally sharing a name. Reports the count on each side (GBIF /
+      also-on-Wikidata / with-a-Wikipedia-article, the last one followed by the actual
+      language(s)). If the
       taxon itself has no Wikidata match but one of its synonyms resolves to an item that
       already has an article, that's flagged as a likely rescue — the taxon is probably
       already covered under a name Wikidata prefers, worth an alias rather than a new
@@ -304,7 +323,20 @@ your own value, and click **Load observations**.
     - **Multiple Wikipedia pages via synonymy** (`hasSynonymDuplication`, "Multiple WP
       (synonymy)" filter) — flags a taxon when more than one name for the same organism
       (its own, or a GBIF synonym) has its own separate Wikipedia article; a real
-      "same species split across pages" risk worth a look, not merely informational.
+      "same species split across pages" risk worth a look, not merely informational. Only
+      counts a synonym when its own GBIF rank (`dwc:taxonRank`) is missing or matches the
+      taxon's own rank — GBIF's synonym list for a species routinely folds in infraspecific
+      (subspecies/variety) names too, and one of *those* having its own article is normal,
+      not the same "same concept, two names" risk a same-rank synonym having one would be
+      (found live: "Alchemilla mollis" lists "Alchemilla acutiloba catillaris", a variety,
+      right alongside "Alchemilla montana", a full species — very different situations).
+      The badge is clickable (`synonymDuplicateDetail()`), not a hover-only tooltip, same
+      fix as the classification-mismatch badge below — expanding it lists every name, marks
+      which one is the taxon's own article vs. a synonym's, links to each Wikidata item, and
+      names the actual language(s) each article is in, since the total alone (a count that
+      includes the taxon's own article, not just its synonyms') was confusing on its own —
+      seeing "3 WP pages" but reopening the per-taxon synonymy panel and finding only 2
+      synonym articles didn't say the third was the taxon's own.
     - **Wikidata classification vs GBIF** (`wikidataGbifMismatch`, "WD needs curation (vs
       GBIF)" filter) — flags a Wikidata item whose direct `P171` parent either doesn't
       exist at all, or disagrees with what GBIF reports at the equivalent rank
