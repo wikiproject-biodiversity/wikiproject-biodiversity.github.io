@@ -44,6 +44,19 @@ async function getEngine() {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Cross-batch rate-limit backoff, shared across every call to sparqlViaComunica (not just
+// retries within one call). A 429 on batch N doesn't mean batch N+1 will be fine just
+// because batch N eventually got its own retry to succeed — the server is rate-limiting
+// this whole run, not one request — so runBatchedStep's inter-batch pause reads this value
+// too, growing on every 429 seen (from any endpoint, any step) and decaying on every
+// clean request, instead of each batch fighting the same limit in isolation. Found live: a
+// large bulk GBIF cross-check (69 batches) kept re-tripping QLever's rate limit batch after
+// batch even though each individual batch's own retry eventually succeeded — the flat
+// 200ms inter-batch gap was never adjusted by what the previous batches had just learned.
+let rateLimitBackoffMs = 0;
+const RATE_LIMIT_BACKOFF_STEP = 1000;
+const RATE_LIMIT_BACKOFF_MAX = 8000;
+
 // Run a SPARQL SELECT via Comunica against a well-behaved SPARQL endpoint
 // (one that returns proper application/sparql-results+json), with retry/backoff.
 async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', silent = false } = {}) {
@@ -63,18 +76,21 @@ async function sparqlViaComunica(query, endpoint, { retries = 3, label = '', sil
         return o;
       });
       if (!silent) log(`${label || endpoint} — ${out.length} rows in ${Math.round(performance.now() - t0)}ms`);
+      rateLimitBackoffMs = Math.max(0, rateLimitBackoffMs - RATE_LIMIT_BACKOFF_STEP / 2);
       return out;
     } catch (e) {
       lastErr = e;
       // Always logged, even when silent: a failed/retried batch is exactly the kind of
       // thing the aggregate summary line (logged by the caller) would otherwise hide.
       log(`${label || endpoint} — attempt ${attempt + 1} failed: ${e.message}`, 'warn');
+      // A 429 means "you're going too fast", not "try again in a moment" — backing off
+      // on the same short schedule as a generic timeout just trips it again on the next
+      // batch. Comunica surfaces the status in the error text (there's no structured
+      // code to read), so detect it there and wait substantially longer — both right now,
+      // within this call's own retries, and for every batch still to come (see above).
+      const isRateLimited = /\b429\b/.test(e.message);
+      if (isRateLimited) rateLimitBackoffMs = Math.min(RATE_LIMIT_BACKOFF_MAX, rateLimitBackoffMs + RATE_LIMIT_BACKOFF_STEP);
       if (attempt < retries) {
-        // A 429 means "you're going too fast", not "try again in a moment" — backing off
-        // on the same short schedule as a generic timeout just trips it again on the next
-        // batch. Comunica surfaces the status in the error text (there's no structured
-        // code to read), so detect it there and wait substantially longer.
-        const isRateLimited = /\b429\b/.test(e.message);
         await sleep(isRateLimited ? 4000 * (attempt + 1) : 800 * (attempt + 1));
       }
     }
@@ -106,8 +122,11 @@ async function runBatchedStep(items, label, fn, batchSize = BATCH_SIZE) {
     // A short gap between requests, not just within retries of one — a public endpoint's
     // rate limit is usually requests-per-window, and firing dozens of successful batches
     // back to back (each takes well under a second) can look like a burst even with no
-    // single request being slow. Skipped after the last batch so it doesn't pad the tail.
-    if (i < batches.length - 1) await sleep(200);
+    // single request being slow. Grows on top of the base 200ms whenever recent batches
+    // (this step or an earlier one — rateLimitBackoffMs is shared) have been hitting 429s,
+    // and shrinks back down as clean requests come in. Skipped after the last batch so it
+    // doesn't pad the tail.
+    if (i < batches.length - 1) await sleep(200 + rateLimitBackoffMs);
   }
   const n = batches.length;
   log(`${label} — ${n} batch${n === 1 ? '' : 'es'}, ${items.length} item${items.length === 1 ? '' : 's'}, ${totalRows} row${totalRows === 1 ? '' : 's'}, ${Math.round(performance.now() - t0)}ms`);
