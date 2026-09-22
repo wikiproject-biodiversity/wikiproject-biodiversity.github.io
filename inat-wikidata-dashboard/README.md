@@ -313,10 +313,13 @@ your own value, and click **Load observations**.
       Wikidata item (not ambiguous, not itself a GBIF synonym), so the target side of the
       link is never a guess. A synonym name with *no* Wikidata item at all gets the same
       treatment as an unmatched main taxon — its own `CREATE` draft (`P31`/`P105` from its
-      own GBIF rank, when known/`P225`/labels/description), except it also gets `P1420`
-      pointing at the accepted item right in the same draft, since GBIF already told us
-      that relationship — a taxon's own `CREATE` can't do that, it doesn't know its own
-      Wikidata item's `qid` yet. Rather than working through a whole list of these one
+      own GBIF rank, when known/`P225`/labels/description, plus `P846` when that synonym's
+      own GBIF usage key is known — its subject URI, `https://www.gbif.org/species/<key>`,
+      also shown as a plain link next to "not on Wikidata" in the list, so the id is visible
+      before ever opening the draft), except it also gets `P1420` pointing at the accepted
+      item right in the same draft, since GBIF already told us that relationship — a taxon's
+      own `CREATE` can't do that, it doesn't know its own Wikidata item's `qid` yet. Rather
+      than working through a whole list of these one
       button at a time, a single "Fix all of the above at once" batch — every unlinked
       `P1420` addition and every missing-item `CREATE`, concatenated into one QuickStatements
       run — appears under the list whenever at least one fix is available, the per-row
