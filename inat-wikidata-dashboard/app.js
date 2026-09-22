@@ -1004,7 +1004,8 @@ function synonymyPanel(t, info) {
     const rankLabel = (rank) => rank ? ` <span class="rank-label">(${escapeHtml(rank)})</span>` : ' <span class="rank-label">(rank unknown)</span>';
     // Collected while building rows below, for the single "do everything in this list at
     // once" batch — the per-row buttons still exist for cherry-picking just one fix.
-    const linkLines = []; // existing-but-unlinked synonym items: one `P1420` add per line
+    const linkLines = []; // existing-but-unlinked synonym items: both P1420 directions per synonym
+    let linkedSynonymCount = 0; // distinct synonyms linked — half of linkLines.length, for the summary text
     const createBlocks = []; // synonym names with no Wikidata item at all: one full CREATE per block
     const rows = names.map(name => {
       const rank = rankByName ? rankByName.get(name) : null;
@@ -1027,10 +1028,18 @@ function synonymyPanel(t, info) {
           // already uses for the main taxon's own P846.
           if (gbifId) block.push(`LAST\tP846\t${qsString(gbifId)}\tS248\t${QS_REF_GBIF}`);
           // The one statement this draft is actually confident about: GBIF already told us
-          // this name is a synonym of the accepted usage this taxon resolved to.
-          block.push(`LAST\tP1420\t${t.wikidata.qid}\tS248\t${QS_REF_GBIF}`);
+          // this name is a synonym of the accepted usage this taxon resolved to. Cites the
+          // specific GBIF record (not just "GBIF" the database) whenever its id is known —
+          // same P846-as-reference-snak pattern as the batch P1420 additions below.
+          const p1420Ref = gbifId ? `S248\t${QS_REF_GBIF}\tS846\t${qsString(gbifId)}` : `S248\t${QS_REF_GBIF}`;
+          block.push(`LAST\tP1420\t${t.wikidata.qid}\t${p1420Ref}`);
           createBlocks.push(block.join('\n'));
         }
+        // P1420 carries a Wikidata "inverse constraint" (the accepted item is expected to
+        // carry the same statement back) — but QuickStatements' `LAST` placeholder only
+        // ever refers to the newly created item as a SUBJECT, never as a value, so there's
+        // no valid batch syntax to add "accepted item → this not-yet-existing item" in the
+        // same run. Flagged in the batch note below instead of silently left incomplete.
         return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata${gbifLink}</li>`;
       }
       return qids.map(qid => {
@@ -1040,9 +1049,9 @@ function synonymyPanel(t, info) {
         const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
         if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
         const canLink = !isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid;
-        if (canLink) linkLines.push(`${qid}\tP1420\t${t.wikidata.qid}\tS248\t${QS_REF_GBIF}`);
+        if (canLink) { linkLines.push(...p1420Lines(qid, t.wikidata.qid, gbifId)); linkedSynonymCount++; }
         const linkBtn = canLink
-          ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}">propose QuickStatements</button>`
+          ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}" data-gbif-id="${gbifId || ''}">propose QuickStatements</button>`
           : '';
         return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>${rankLabel(rank)}` +
           `${withArticle.length ? ` — has ${withArticle.map(l => l.code).join('/')} Wikipedia` : ' — no Wikipedia article'}` +
@@ -1058,14 +1067,17 @@ function synonymyPanel(t, info) {
     const articleLangSummary = withArticleNames.length
       ? ` (${withArticleNames.map(a => a.langs.join('/')).join(', ')})`
       : '';
-    const batchCount = linkLines.length + createBlocks.length;
+    const batchCount = linkedSynonymCount + createBlocks.length;
     const batchSection = batchCount
       ? (() => {
           const batchId = `synonym-batch-qs-${taxonActionPanelSeq++}`;
           const parts = [];
-          if (linkLines.length) parts.push(`link ${linkLines.length} existing item${linkLines.length === 1 ? '' : 's'} (P1420)`);
+          if (linkedSynonymCount) parts.push(`link ${linkedSynonymCount} existing item${linkedSynonymCount === 1 ? '' : 's'} (P1420, both directions)`);
           if (createBlocks.length) parts.push(`create ${createBlocks.length} new item${createBlocks.length === 1 ? '' : 's'}`);
-          return `<p><strong>Fix all of the above at once</strong> — ${parts.join(' and ')}, one QuickStatements batch:</p>
+          const createCaveat = createBlocks.length
+            ? ` A new item's own <code>P1420</code> only points one way (at ${t.wikidata.qid}) — QuickStatements has no way to reference a not-yet-created item as a value, so once it's created, come back and add the inverse statement (<code>P1420</code> → the new item's assigned QID) on ${t.wikidata.qid} by hand.`
+            : '';
+          return `<p><strong>Fix all of the above at once</strong> — ${parts.join(' and ')}, one QuickStatements batch. Every <code>P1420</code> addition between two <em>existing</em> items goes both directions — Wikidata's own constraint checker expects the accepted item to link back to the synonym, not just the other way round.${createCaveat}</p>
             <div class="stub-toolbar">
               <button class="small-btn copy-stub-btn" data-target="${batchId}">Copy commands</button>
               <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
@@ -1671,6 +1683,22 @@ function qsString(s) {
 // QuickStatements' own docs and a real run before this was relied on for P171 below.
 function qsReferenceBlock(refQids) {
   return refQids.map((refQid, i) => `${i === 0 ? 'S' : '!S'}248\t${refQid}`).join('\t');
+}
+
+// P1420 ("taxon synonym") carries a Wikidata "inverse constraint" — its own constraint
+// checker flags a one-directional link as a potential issue, expecting the accepted item
+// to carry the same statement back at the synonym (confirmed live: Wikidata's own UI on a
+// one-way P1420 addition). So every add proposes both directions in one go. Both cite the
+// same specific GBIF record as their reference — not just "stated in GBIF" the database,
+// but that record's own id (P846 as a reference snak, same property as the main P846
+// statement elsewhere) — when it's known, so the exact evidence is checkable, not just
+// which database it came from.
+function p1420Lines(synQid, acceptedQid, gbifId) {
+  const ref = gbifId ? `S248\t${QS_REF_GBIF}\tS846\t${qsString(gbifId)}` : `S248\t${QS_REF_GBIF}`;
+  return [
+    `${synQid}\tP1420\t${acceptedQid}\t${ref}`,
+    `${acceptedQid}\tP1420\t${synQid}\t${ref}`,
+  ];
 }
 
 async function fetchGbifMatch(name) {
@@ -2618,6 +2646,16 @@ async function renderTaxonDetail(t) {
   synonymyCheckSectionEl.hidden = true;
   taxonDetailEl.hidden = false;
 
+  // Every badge on this row (gbifmismatch/inatconflict/qs/inatlink/plazi/synonymdup/…)
+  // opens its detail as a sibling <tr> via `row.after(...)`, where `row` is always this
+  // exact <tr> — the curation page only ever shows one. Setting .innerHTML below replaces
+  // this row's own cells but leaves any such sibling completely untouched, so navigating
+  // straight from one taxon's curation page to another (with a detail panel still open)
+  // left the PREVIOUS taxon's detail sitting under the NEW taxon's row — found live,
+  // Rhododendron ponticum's synonym-duplicate detail appearing under Anser anser
+  // domesticus. Table rows don't have this problem (renderTable() clears the whole tbody
+  // every time); this is the one place several rows can exist without a full rebuild.
+  while (taxonDetailRowEl.nextElementSibling) taxonDetailRowEl.nextElementSibling.remove();
   taxonDetailRowEl.innerHTML = buildTaxonRowCells(t, { linkName: false });
 
   let ctx = null;
@@ -3520,17 +3558,19 @@ document.addEventListener('click', (e) => {
     next.remove();
     return;
   }
-  const { synQid, synName, acceptedQid, acceptedName } = btn.dataset;
-  const commands = `${synQid}\tP1420\t${acceptedQid}\tS248\t${QS_REF_GBIF}`;
+  const { synQid, synName, acceptedQid, acceptedName, gbifId } = btn.dataset;
+  const commands = p1420Lines(synQid, acceptedQid, gbifId || null).join('\n');
   const rowId = `p1420-${synQid}-${Date.now()}`;
   const wrap = document.createElement('div');
   wrap.className = 'p1420-draft';
   wrap.style.margin = '6px 0';
   wrap.innerHTML = `
-    Adds <a href="https://www.wikidata.org/wiki/${synQid}" target="_blank" rel="noopener">${synQid}</a>
-    (<em>${escapeHtml(synName)}</em>) as a <code>P1420</code> taxon synonym of
+    Links <a href="https://www.wikidata.org/wiki/${synQid}" target="_blank" rel="noopener">${synQid}</a>
+    (<em>${escapeHtml(synName)}</em>) and
     <a href="https://www.wikidata.org/wiki/${acceptedQid}" target="_blank" rel="noopener">${acceptedQid}</a>
-    (<em>${escapeHtml(acceptedName)}</em>), sourced to GBIF:
+    (<em>${escapeHtml(acceptedName)}</em>) as <code>P1420</code> taxon synonyms of each other — both
+    directions, since Wikidata's own constraint checker expects the accepted item to link back —
+    sourced to ${gbifId ? `GBIF record <a href="https://www.gbif.org/species/${gbifId}" target="_blank" rel="noopener">${gbifId}</a>` : 'GBIF'}:
     <div class="stub-toolbar">
       <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
       <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
