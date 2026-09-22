@@ -281,7 +281,16 @@ your own value, and click **Load observations**.
     so they fire identically in either place) — no logic is duplicated between them.
     Resolving the hash still needs this run's own `currentTaxa` in memory (no backend to
     look a bare taxon id up against without a project/user already loaded), so a bookmarked
-    link only resolves after loading a scope that actually contains that taxon.
+    link only resolves after loading a scope that actually contains that taxon. Every badge
+    on this page (gbifmismatch/inatconflict/qs/inatlink/plazi/synonym-duplicate/…) opens its
+    detail as a sibling table row next to the one, single `<tr>` this page ever shows — and
+    `renderTaxonDetail()` only ever replaced that row's own cells, never touching any such
+    sibling. Found live: navigating from one taxon's curation page straight to another with
+    a detail panel still open left the *previous* taxon's detail sitting under the *new*
+    taxon's row (a stray "Rhododendron ponticum" synonym-duplicate panel under "Anser anser
+    domesticus"). Table rows don't have this problem — `renderTable()` clears the whole
+    `tbody` on every call — this was the one place several rows could exist without a full
+    rebuild; fixed by clearing any leftover siblings before rendering a new taxon.
 12. **Synonymy & homonymy** — a panel on the curation page (`buildSynonymyInfo()`,
     `synonymyPanel()`), on-demand and per-taxon only; the lookups below don't scale to a
     batch of hundreds the way the rest of the pipeline does. RDF end to end, same
@@ -308,22 +317,33 @@ your own value, and click **Load observations**.
       already has an article, that's flagged as a likely rescue — the taxon is probably
       already covered under a name Wikidata prefers, worth an alias rather than a new
       `CREATE`. A synonym that resolves to a Wikidata item but isn't `P1420`-linked gets its
-      own "propose QuickStatements" button — `${synonymQid}\tP1420\t${acceptedQid}` sourced
-      to GBIF — offered only when this taxon itself is confidently the accepted usage's own
-      Wikidata item (not ambiguous, not itself a GBIF synonym), so the target side of the
-      link is never a guess. A synonym name with *no* Wikidata item at all gets the same
-      treatment as an unmatched main taxon — its own `CREATE` draft (`P31`/`P105` from its
-      own GBIF rank, when known/`P225`/labels/description, plus `P846` when that synonym's
-      own GBIF usage key is known — its subject URI, `https://www.gbif.org/species/<key>`,
-      also shown as a plain link next to "not on Wikidata" in the list, so the id is visible
-      before ever opening the draft), except it also gets `P1420` pointing at the accepted
-      item right in the same draft, since GBIF already told us that relationship — a taxon's
-      own `CREATE` can't do that, it doesn't know its own Wikidata item's `qid` yet. Rather
-      than working through a whole list of these one
-      button at a time, a single "Fix all of the above at once" batch — every unlinked
-      `P1420` addition and every missing-item `CREATE`, concatenated into one QuickStatements
-      run — appears under the list whenever at least one fix is available, the per-row
-      buttons remaining for cherry-picking just one instead of the whole list.
+      own "propose QuickStatements" button (`p1420Lines()`) — offered only when this taxon
+      itself is confidently the accepted usage's own Wikidata item (not ambiguous, not
+      itself a GBIF synonym), so the target side of the link is never a guess. Proposes
+      *both* directions, `${synonymQid}\tP1420\t${acceptedQid}` and the reverse — Wikidata's
+      own constraint checker flags a one-way `P1420` as a potential issue (confirmed live:
+      its UI on a real one-directional addition), expecting the accepted item to link back.
+      Both cite the specific GBIF record that established the relationship, not just "GBIF"
+      the database in general — its own usage key as a `P846` reference snak alongside the
+      usual `S248`, whenever that key is known. A synonym name with *no* Wikidata item at
+      all gets the same treatment as an unmatched main taxon — its own `CREATE` draft
+      (`P31`/`P105` from its own GBIF rank, when known/`P225`/labels/description, plus
+      `P846` when that synonym's own GBIF usage key is known — its subject URI,
+      `https://www.gbif.org/species/<key>`, also shown as a plain link next to "not on
+      Wikidata" in the list, so the id is visible before ever opening the draft), except it
+      also gets `P1420` pointing at the accepted item right in the same draft (same
+      GBIF-record reference), since GBIF already told us that relationship — a taxon's own
+      `CREATE` can't do that, it doesn't know its own Wikidata item's `qid` yet. The reverse
+      direction *can't* be added in the same batch here, though: QuickStatements' `LAST`
+      placeholder only ever stands in for the newly created item as a *subject*, never as a
+      value another statement can point at (confirmed against QuickStatements' own docs), so
+      there's no valid syntax for "the accepted item now points at this brand-new item" until
+      it actually exists — flagged as a manual follow-up in the batch note instead of
+      silently left incomplete. Rather than working through a whole list of these one button
+      at a time, a single "Fix all of the above at once" batch — every unlinked `P1420`
+      addition (both directions) and every missing-item `CREATE`, concatenated into one
+      QuickStatements run — appears under the list whenever at least one fix is available,
+      the per-row buttons remaining for cherry-picking just one instead of the whole list.
     - **Homonyms**: when the match is ambiguous (multiple Wikidata items share the exact
       scientific name — real homonymy, not the stray-Lexeme-Sense artifact already
       filtered out of candidate matching elsewhere), each candidate's own `P171` (parent
