@@ -31,11 +31,16 @@
     <select id="scopeType">
       <option value="project">Project</option>
       <option value="user">User</option>
+      <option value="osm">OSM area</option>
     </select>
   </label>
   <label>
     <span id="projectInputLabel">iNaturalist project slug or numeric ID</span>
     <input id="projectInput" type="text" value="biohackathon-2026" spellcheck="false">
+  </label>
+  <label id="osmRadiusRow" hidden>
+    <span>Radius (km, node only)</span>
+    <input id="osmRadiusInput" type="number" min="0.1" max="50" step="0.5" value="10">
   </label>
   <button id="runBtn">Load observations →</button>
   <div id="status" class="status" aria-live="polite">
@@ -132,10 +137,21 @@
     <div class="about-body">
       <ol>
         <li>
-          <strong>iNaturalist REST API</strong> — fetches every observation in the chosen project
-          or by the chosen user (<code>project_id=</code> / <code>user_id=</code>, both accept a
-          slug/login or a numeric id) and collects the distinct taxa (scientific name, common
-          name, photo, iNaturalist taxon ID).
+          <strong>iNaturalist REST API</strong> — fetches every observation in the chosen scope
+          and collects the distinct taxa (scientific name, common name, photo, iNaturalist taxon
+          ID). For <strong>Project</strong>/<strong>User</strong> that's
+          <code>project_id=</code> / <code>user_id=</code> (both accept a slug/login or a numeric
+          id). For <strong>OSM area</strong>, the entered node/way/relation ID (or an
+          openstreetmap.org URL) is resolved geographically first, via the
+          <a href="https://overpass-api.de/" target="_blank" rel="noopener">Overpass API</a>: a
+          way or relation resolves to its bounding box (<code>out bb;</code>), searched with
+          iNaturalist's <code>swlat</code>/<code>swlng</code>/<code>nelat</code>/<code>nelng</code>
+          params; a node has no area of its own, so it's searched with
+          <code>lat</code>/<code>lng</code>/<code>radius</code> instead, using the radius (km)
+          entered alongside the reference. Everything downstream of this step is identical no
+          matter which scope was used — this is the first step towards scoping the whole
+          dashboard to a real-world area (a park, a town, a bioblitz perimeter) rather than only
+          an iNaturalist project or user.
         </li>
         <li>
           <strong>Comunica → QLever's Wikidata mirror, live WDQS as a fallback</strong> — a fast
