@@ -31,15 +31,19 @@ your own value, and click **Load observations**.
 1. **iNaturalist REST API** — paginates through every observation in the chosen scope and
    collects the distinct taxa (scientific name, common name, photo, observation count). For
    **Project**/**User**, that's `project_id=` / `user_id=` (both accept either a slug/login or
-   a numeric id). For **OSM area**, the entered OSM node/way/relation ID (or full
-   openstreetmap.org URL) is first resolved geographically via the
-   [Overpass API](https://overpass-api.de/api/interpreter) — a way or relation resolves to its
-   bounding box (`out bb;`) and is searched with iNaturalist's `swlat`/`swlng`/`nelat`/`nelng`
-   params; a node has no area of its own, so it's searched with `lat`/`lng`/`radius` instead,
-   using the radius (km) entered alongside the reference. From here on the pipeline is
-   identical regardless of scope — this is the first step towards letting a wikiblitz
-   organiser scope the whole dashboard to a real-world area (a park, a town, a bioblitz
-   perimeter) rather than only an iNaturalist project or user.
+   a numeric id). For **OSM area**, the entered value is resolved geographically first, via
+   `resolveOsmReference()`: an explicit node/way/relation id or openstreetmap.org URL is parsed
+   directly (`parseOsmReference()`); anything else — a place name typed and submitted without
+   ever picking a suggestion from the scope field's own autocomplete — falls back to the same
+   live [Nominatim](https://nominatim.openstreetmap.org) search the autocomplete uses, taking
+   its top-ranked match, so a bare string works either way. The resolved reference then goes to
+   the [Overpass API](https://overpass-api.de/api/interpreter) — a way or relation resolves to
+   its bounding box (`out bb;`) and is searched with iNaturalist's
+   `swlat`/`swlng`/`nelat`/`nelng` params; a node has no area of its own, so it's searched with
+   `lat`/`lng`/`radius` instead, using the radius (km) entered alongside the reference. From
+   here on the pipeline is identical regardless of scope — this is the first step towards
+   letting a wikiblitz organiser scope the whole dashboard to a real-world area (a park, a
+   town, a bioblitz perimeter) rather than only an iNaturalist project or user.
 2. **Comunica → [QLever](https://qlever.cs.uni-freiburg.de/wikidata)'s Wikidata
    mirror, live WDQS as a fallback** — resolves each scientific name to a Wikidata item
    (`wdt:P225`) and reads off cross-reference identifiers already stored there: GBIF
@@ -275,7 +279,11 @@ your own value, and click **Load observations**.
       taxon itself has no Wikidata match but one of its synonyms resolves to an item that
       already has an article, that's flagged as a likely rescue — the taxon is probably
       already covered under a name Wikidata prefers, worth an alias rather than a new
-      `CREATE`.
+      `CREATE`. A synonym that resolves to a Wikidata item but isn't `P1420`-linked gets its
+      own "propose QuickStatements" button — `${synonymQid}\tP1420\t${acceptedQid}` sourced
+      to GBIF — offered only when this taxon itself is confidently the accepted usage's own
+      Wikidata item (not ambiguous, not itself a GBIF synonym), so the target side of the
+      link is never a guess.
     - **Homonyms**: when the match is ambiguous (multiple Wikidata items share the exact
       scientific name — real homonymy, not the stray-Lexeme-Sense artifact already
       filtered out of candidate matching elsewhere), each candidate's own `P171` (parent
