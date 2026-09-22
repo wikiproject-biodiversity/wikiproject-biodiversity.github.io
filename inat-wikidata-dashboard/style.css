@@ -105,6 +105,60 @@ header h1 {
 
 .controls input { min-width: 240px; }
 
+.autocomplete-field { position: relative; }
+
+.autocomplete-wrap { position: relative; }
+
+.autocomplete-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.autocomplete-list li {
+  padding: 7px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.autocomplete-list li .ac-sub {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.autocomplete-list li:hover,
+.autocomplete-list li.active {
+  background: var(--warn-bg);
+}
+
+.autocomplete-list li.ac-empty,
+.autocomplete-list li.ac-loading {
+  cursor: default;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.autocomplete-list li.ac-empty:hover,
+.autocomplete-list li.ac-loading:hover {
+  background: transparent;
+}
+
 button {
   font-size: 0.9rem;
   padding: 9px 16px;
