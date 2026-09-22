@@ -182,6 +182,20 @@ function parseOsmReference(value) {
   return { type: TYPES[m[1].toLowerCase()], id: m[2] };
 }
 
+// The scope field accepts either an already-specific id/URL (parsed directly, no network
+// needed) or a free-text place name typed and submitted without ever picking a suggestion
+// from the autocomplete dropdown — same live Nominatim search either way, just resolved
+// at "Load observations" time instead of as-you-type, taking Nominatim's top-ranked match.
+async function resolveOsmReference(value) {
+  try {
+    return parseOsmReference(value);
+  } catch (e) {
+    const matches = await searchOsmForAutocomplete(value);
+    if (!matches.length) throw new Error(`No OSM place found for "${value}".`);
+    return parseOsmReference(matches[0].value);
+  }
+}
+
 // Resolves an OSM node to a point (iNaturalist search then needs a radius, since a node
 // alone has no area) and a way/relation to its bounding box (`out bb;` puts a `bounds`
 // object straight on the element — verified live against overpass.kumi.systems).
@@ -218,7 +232,7 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
   let noun;
   if (scopeType === 'osm') {
     noun = 'OSM area';
-    const ref = parseOsmReference(scopeValue);
+    const ref = await resolveOsmReference(scopeValue);
     const bounds = await fetchOsmBoundingBox(ref);
     queryParams = bounds.kind === 'point'
       ? `lat=${bounds.lat}&lng=${bounds.lng}&radius=${osmRadiusKm || 10}`
@@ -947,6 +961,12 @@ function synonymyPanel(t, info) {
     const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
     const withArticleNames = [];
     let rescue = null;
+    // Only offered when this taxon itself is confidently the *accepted* usage's Wikidata
+    // item — not when t.wikidata is ambiguous/missing, and not when t itself is a GBIF
+    // synonym (its "accepted" item is a different one than t.wikidata, not derivable here
+    // without guessing). Same conservative standard as the rest of this tool's QuickStatements
+    // proposals: only draft what's actually known, never the plausible-looking guess.
+    const canProposeAcceptedQid = !isSynonym && t.wikidata && t.wikidata.qid;
     const rows = names.map(name => {
       const qids = wdMatches.get(name) || [];
       if (!qids.length) return `<li><em>${escapeHtml(name)}</em> — not on Wikidata</li>`;
@@ -956,9 +976,12 @@ function synonymyPanel(t, info) {
         if (withArticle.length) withArticleNames.push(name);
         const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
         if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
+        const linkBtn = (!isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid)
+          ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}">propose QuickStatements</button>`
+          : '';
         return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>` +
           `${withArticle.length ? ` — has ${withArticle.map(l => l.code).join('/')} Wikipedia` : ' — no Wikipedia article'}` +
-          `${isSyn ? ' — P1420-linked as a synonym on Wikidata' : ' — same name exists on Wikidata but not P1420-linked as a synonym'}</li>`;
+          `${isSyn ? ' — P1420-linked as a synonym on Wikidata' : ' — same name exists on Wikidata but not P1420-linked as a synonym'}${linkBtn}</li>`;
       }).join('');
     }).join('');
     const rescueNote = rescue
@@ -967,7 +990,7 @@ function synonymyPanel(t, info) {
     const gbifNote = isSynonym
       ? `<p class="identity-note"><em>${escapeHtml(t.name)}</em> is itself a GBIF synonym — counts below are for its accepted usage.</p>`
       : '';
-    sections.push(`<div><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article.
+    sections.push(`<div class="synonymy-list-section"><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article.
       ${gbifNote}
       ${names.length ? `<ul>${rows}</ul>` : ''}
       ${rescueNote}
@@ -3193,6 +3216,40 @@ document.addEventListener('click', (e) => {
   }).catch(() => {
     ta.select();
   });
+});
+
+// Proposes fixing exactly the gap the synonymy panel flags: a GBIF synonym that already
+// has its own Wikidata item, but isn't P1420-linked to the accepted item this taxon
+// resolved to. Toggles like every other inline draft in this app — click again (or the
+// button's own nextElementSibling check) closes it instead of stacking a duplicate.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.p1420-add-btn');
+  if (!btn) return;
+  const next = btn.nextElementSibling;
+  if (next && next.classList.contains('p1420-draft')) {
+    next.remove();
+    return;
+  }
+  const { synQid, synName, acceptedQid, acceptedName } = btn.dataset;
+  const commands = `${synQid}\tP1420\t${acceptedQid}\tS248\t${QS_REF_GBIF}`;
+  const rowId = `p1420-${synQid}-${Date.now()}`;
+  const wrap = document.createElement('div');
+  wrap.className = 'p1420-draft';
+  wrap.style.margin = '6px 0';
+  wrap.innerHTML = `
+    Adds <a href="https://www.wikidata.org/wiki/${synQid}" target="_blank" rel="noopener">${synQid}</a>
+    (<em>${escapeHtml(synName)}</em>) as a <code>P1420</code> taxon synonym of
+    <a href="https://www.wikidata.org/wiki/${acceptedQid}" target="_blank" rel="noopener">${acceptedQid}</a>
+    (<em>${escapeHtml(acceptedName)}</em>), sourced to GBIF:
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      <button class="small-btn p1420-cancel-btn">✕ Cancel</button>
+    </div>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+  `;
+  wrap.querySelector('.p1420-cancel-btn').addEventListener('click', () => wrap.remove());
+  btn.insertAdjacentElement('afterend', wrap);
 });
 
 bulkInatIdBtn.addEventListener('click', () => {
