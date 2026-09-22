@@ -820,13 +820,18 @@ SELECT ?syn ?name ?rank WHERE {
   OPTIONAL { ?syn dwc:taxonRank ?rank }
 }`;
   const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF synonyms' });
-  const byName = new Map(); // name -> rank (first non-null rank wins if the same name repeats with conflicting/missing ranks)
+  // name -> {rank, gbifId} — gbifId is the synonym's OWN usage key (from its subject URI,
+  // https://www.gbif.org/species/<usageKey>), kept alongside whichever row's rank was
+  // chosen so the two never end up describing two different underlying GBIF records.
+  const byName = new Map();
   for (const r of rows) {
     if (!r.name) continue;
     const rank = r.rank ? r.rank.toLowerCase() : null;
-    if (!byName.has(r.name) || (rank && !byName.get(r.name))) byName.set(r.name, rank);
+    const gbifId = r.syn ? r.syn.split('/').pop() : null;
+    const existing = byName.get(r.name);
+    if (!existing || (rank && !existing.rank)) byName.set(r.name, { rank, gbifId });
   }
-  return [...byName.entries()].map(([name, rank]) => ({ name, rank }));
+  return [...byName.entries()].map(([name, info]) => ({ name, rank: info.rank, gbifId: info.gbifId }));
 }
 
 // Same exact-P225-match pattern the main pipeline uses, batched over a handful of
@@ -940,6 +945,7 @@ async function buildSynonymyInfo(t, ctx) {
       const synonyms = (await fetchGbifSynonyms(usage.acceptedUri)).filter(s => s.name !== t.name);
       const synonymNames = synonyms.map(s => s.name);
       const rankByName = new Map(synonyms.map(s => [s.name, s.rank]));
+      const gbifIdByName = new Map(synonyms.map(s => [s.name, s.gbifId]));
       const wdMatches = await fetchWikidataItemsForNames(synonymNames);
       const allQids = [...new Set([].concat(...wdMatches.values()))];
       const sitelinks = await fetchSitelinksForQids(allQids);
@@ -949,7 +955,7 @@ async function buildSynonymyInfo(t, ctx) {
       // P105) — fetched here (cached after the first call, so later panels are free)
       // rather than making synonymyPanel() itself async just for this.
       const rankQids = await getTaxonomicRankQids().catch(() => new Map());
-      info.synonyms = { names: synonymNames, rankByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
+      info.synonyms = { names: synonymNames, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
     }
   } catch (e) { info.synonymsError = e.message; }
 
@@ -981,7 +987,7 @@ function synonymyPanel(t, info) {
   }
 
   if (info.synonyms) {
-    const { names, rankByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
+    const { names, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
     const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
     const withArticleNames = [];
     let rescue = null;
@@ -1002,6 +1008,8 @@ function synonymyPanel(t, info) {
     const createBlocks = []; // synonym names with no Wikidata item at all: one full CREATE per block
     const rows = names.map(name => {
       const rank = rankByName ? rankByName.get(name) : null;
+      const gbifId = gbifIdByName ? gbifIdByName.get(name) : null;
+      const gbifLink = gbifId ? ` — <a href="https://www.gbif.org/species/${gbifId}" target="_blank" rel="noopener">GBIF ${gbifId}</a>` : '';
       const qids = wdMatches.get(name) || [];
       if (!qids.length) {
         if (canProposeAcceptedQid) {
@@ -1014,12 +1022,16 @@ function synonymyPanel(t, info) {
           block.push(`LAST\tLmul\t${qsString(name)}`);
           block.push(`LAST\tAen\t${qsString(name)}`);
           block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym of ${t.name}`)}`);
+          // The synonym's own GBIF backbone id, when the record it came from had one —
+          // same self-referential "GBIF says this is GBIF id X" pattern buildQuickStatements
+          // already uses for the main taxon's own P846.
+          if (gbifId) block.push(`LAST\tP846\t${qsString(gbifId)}\tS248\t${QS_REF_GBIF}`);
           // The one statement this draft is actually confident about: GBIF already told us
           // this name is a synonym of the accepted usage this taxon resolved to.
           block.push(`LAST\tP1420\t${t.wikidata.qid}\tS248\t${QS_REF_GBIF}`);
           createBlocks.push(block.join('\n'));
         }
-        return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata</li>`;
+        return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata${gbifLink}</li>`;
       }
       return qids.map(qid => {
         const langs = sitelinks.get(qid) || {};
