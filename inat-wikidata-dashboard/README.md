@@ -451,16 +451,23 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   subset the fallback sends it — both endpoints are public services this tool has no
   control over. `runBatchedStep` retries with backoff (longer, dedicated backoff
   specifically for a `429`, detected by string-matching the error text since Comunica
-  exposes no structured status code) and paces successive batches 200ms apart, and
-  `WDQS_BATCH_SIZE` (25, vs `BATCH_SIZE` 100 for QLever) sends WDQS smaller requests
-  than QLever gets — but there's no amount of client-side pacing that guarantees a
-  shared public endpoint responds quickly under someone else's load, or under this
-  tool's own cumulative load from a long testing session. Worst case, a step logs its
-  failure and moves on with whatever QLever alone already found (see the `catch` blocks
-  in `resolveWikidata`/`resolveSitelinks`) rather than hanging. These retry-attempt and
-  fallback-triggered lines log in amber (`log(msg, 'warn')`), not red — they're the tool
-  successfully handling a slow/rate-limited public endpoint, not something broken. Red
-  (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
+  exposes no structured status code) and paces successive batches 200ms apart — plus a
+  shared, adaptive `rateLimitBackoffMs` on top of that base gap, bumped whenever *any*
+  batch (this step, or an earlier one in the same run — the counter is module-level, not
+  per-step) hits a `429`, and decayed on every clean request. Found live: a large bulk
+  GBIF cross-check (69 batches) kept re-tripping QLever's rate limit batch after batch
+  even though each individual batch's own retry eventually succeeded — a flat 200ms gap
+  never adjusted to what the *previous* batches had just learned about the server being
+  under load, so each one fought the same limit in isolation instead of the whole run
+  actually slowing down. `WDQS_BATCH_SIZE` (25, vs `BATCH_SIZE` 100 for QLever) sends
+  WDQS smaller requests than QLever gets — but there's no amount of client-side pacing
+  that guarantees a shared public endpoint responds quickly under someone else's load, or
+  under this tool's own cumulative load from a long testing session. Worst case, a step
+  logs its failure and moves on with whatever QLever alone already found (see the `catch`
+  blocks in `resolveWikidata`/`resolveSitelinks`) rather than hanging. These retry-attempt
+  and fallback-triggered lines log in amber (`log(msg, 'warn')`), not red — they're the
+  tool successfully handling a slow/rate-limited public endpoint, not something broken.
+  Red (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
   upfront "the whole run will take N minutes" estimate would just be a guess dressed up
   as a number. Instead the status header shows which of the 5 pipeline steps is current
   (`Step 3/5: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
