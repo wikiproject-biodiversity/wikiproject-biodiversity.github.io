@@ -799,16 +799,34 @@ SELECT ?taxon ?accepted WHERE {
 }
 
 // The reverse of acceptedNameUsage — every record that points AT this accepted usage is
-// one of its synonyms.
+// one of its synonyms. Also fetches each synonym's own dwc:taxonRank: GBIF's synonym
+// list for a species routinely mixes species-rank synonyms with infraspecific ones
+// (subspecies/variety epithets folded into the same species when the finer division
+// isn't recognized) — found live, "Alchemilla mollis" lists both "Alchemilla montana"
+// (SPECIES) and "Alchemilla mollis aprica" (VARIETY) as synonyms side by side. Treating
+// those the same when flagging "separate Wikipedia coverage" is misleading: an
+// infraspecific synonym having its own article is normal, not the same kind of
+// same-concept duplication a same-rank synonym having one would be. Rank isn't always
+// populated on every record (found live: several rows come back with none at all), so a
+// missing rank has to mean "unknown", not "assume it matches" — never silently coerced
+// into agreement.
 async function fetchGbifSynonyms(acceptedUri) {
-  const query = `PREFIX gbifv: <https://rs.gbif.org/terms/>
+  const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX gbifv: <https://rs.gbif.org/terms/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?syn ?name WHERE {
+SELECT ?syn ?name ?rank WHERE {
   ?syn gbifv:acceptedNameUsage <${acceptedUri}> .
   OPTIONAL { ?syn rdfs:label ?name }
+  OPTIONAL { ?syn dwc:taxonRank ?rank }
 }`;
   const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF synonyms' });
-  return [...new Set(rows.map(r => r.name).filter(Boolean))];
+  const byName = new Map(); // name -> rank (first non-null rank wins if the same name repeats with conflicting/missing ranks)
+  for (const r of rows) {
+    if (!r.name) continue;
+    const rank = r.rank ? r.rank.toLowerCase() : null;
+    if (!byName.has(r.name) || (rank && !byName.get(r.name))) byName.set(r.name, rank);
+  }
+  return [...byName.entries()].map(([name, rank]) => ({ name, rank }));
 }
 
 // Same exact-P225-match pattern the main pipeline uses, batched over a handful of
@@ -919,13 +937,15 @@ async function buildSynonymyInfo(t, ctx) {
   try {
     const usage = await fetchGbifUsage(t.name);
     if (usage) {
-      const synonymNames = (await fetchGbifSynonyms(usage.acceptedUri)).filter(n => n !== t.name);
+      const synonyms = (await fetchGbifSynonyms(usage.acceptedUri)).filter(s => s.name !== t.name);
+      const synonymNames = synonyms.map(s => s.name);
+      const rankByName = new Map(synonyms.map(s => [s.name, s.rank]));
       const wdMatches = await fetchWikidataItemsForNames(synonymNames);
       const allQids = [...new Set([].concat(...wdMatches.values()))];
       const sitelinks = await fetchSitelinksForQids(allQids);
       const linkCheckQids = t.wikidata ? [...new Set([...allQids, t.wikidata.qid])] : allQids;
       const synLinks = await fetchTaxonSynonymLinks(linkCheckQids);
-      info.synonyms = { names: synonymNames, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
+      info.synonyms = { names: synonymNames, rankByName, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
     }
   } catch (e) { info.synonymsError = e.message; }
 
@@ -957,7 +977,7 @@ function synonymyPanel(t, info) {
   }
 
   if (info.synonyms) {
-    const { names, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
+    const { names, rankByName, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
     const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
     const withArticleNames = [];
     let rescue = null;
@@ -967,19 +987,25 @@ function synonymyPanel(t, info) {
     // without guessing). Same conservative standard as the rest of this tool's QuickStatements
     // proposals: only draft what's actually known, never the plausible-looking guess.
     const canProposeAcceptedQid = !isSynonym && t.wikidata && t.wikidata.qid;
+    // GBIF's synonym list for a species routinely mixes in infraspecific (subspecies/
+    // variety) names folded into it — shown here so a curator can tell "Alchemilla
+    // montana (species)" apart from "Alchemilla mollis aprica (variety)" at a glance,
+    // instead of every synonym reading as if it were at the same rank as the taxon itself.
+    const rankLabel = (rank) => rank ? ` <span class="rank-label">(${escapeHtml(rank)})</span>` : ' <span class="rank-label">(rank unknown)</span>';
     const rows = names.map(name => {
+      const rank = rankByName ? rankByName.get(name) : null;
       const qids = wdMatches.get(name) || [];
-      if (!qids.length) return `<li><em>${escapeHtml(name)}</em> — not on Wikidata</li>`;
+      if (!qids.length) return `<li><em>${escapeHtml(name)}</em>${rankLabel(rank)} — not on Wikidata</li>`;
       return qids.map(qid => {
         const langs = sitelinks.get(qid) || {};
         const withArticle = LANGS.filter(l => langs[l.code]);
-        if (withArticle.length) withArticleNames.push(name);
+        if (withArticle.length) withArticleNames.push({ name, langs: withArticle.map(l => l.code) });
         const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
         if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
         const linkBtn = (!isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid)
           ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}">propose QuickStatements</button>`
           : '';
-        return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>` +
+        return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>${rankLabel(rank)}` +
           `${withArticle.length ? ` — has ${withArticle.map(l => l.code).join('/')} Wikipedia` : ' — no Wikipedia article'}` +
           `${isSyn ? ' — P1420-linked as a synonym on Wikidata' : ' — same name exists on Wikidata but not P1420-linked as a synonym'}${linkBtn}</li>`;
       }).join('');
@@ -990,7 +1016,10 @@ function synonymyPanel(t, info) {
     const gbifNote = isSynonym
       ? `<p class="identity-note"><em>${escapeHtml(t.name)}</em> is itself a GBIF synonym — counts below are for its accepted usage.</p>`
       : '';
-    sections.push(`<div class="synonymy-list-section"><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article.
+    const articleLangSummary = withArticleNames.length
+      ? ` (${withArticleNames.map(a => a.langs.join('/')).join(', ')})`
+      : '';
+    sections.push(`<div class="synonymy-list-section"><strong>Synonyms</strong> — ${names.length} on <a href="${acceptedUri}" target="_blank" rel="noopener">GBIF</a>, ${onWikidataNames.length} also exist as Wikidata items, ${withArticleNames.length} of those have a Wikipedia article${articleLangSummary}.
       ${gbifNote}
       ${names.length ? `<ul>${rows}</ul>` : ''}
       ${rescueNote}
@@ -1053,21 +1082,31 @@ SELECT ?name ?taxon ?accepted ?kingdom ?phylum ?class ?order ?family ?genus WHER
   return map;
 }
 
+// Batched counterpart of fetchGbifSynonyms — same {name, rank} shape per synonym, same
+// "missing rank means unknown, not a match" handling, for the bulk cross-check below.
 async function fetchGbifSynonymsForUris(acceptedUris) {
-  const map = new Map();
+  const map = new Map(); // accepted URI -> [{name, rank}, ...]
   if (!acceptedUris.length) return map;
   const values = acceptedUris.map(u => `<${u}>`).join(' ');
-  const query = `PREFIX gbifv: <https://rs.gbif.org/terms/>
+  const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
+PREFIX gbifv: <https://rs.gbif.org/terms/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-SELECT ?accepted ?name WHERE {
+SELECT ?accepted ?name ?rank WHERE {
   VALUES ?accepted { ${values} }
   ?syn gbifv:acceptedNameUsage ?accepted .
   OPTIONAL { ?syn rdfs:label ?name }
+  OPTIONAL { ?syn dwc:taxonRank ?rank }
 }`;
   const rows = await sparqlViaComunica(query, GBIF_ENDPOINT, { silent: true, label: 'GBIF synonyms (batch)' });
+  const byAccepted = new Map(); // accepted URI -> name -> rank
   for (const r of rows) {
     if (!r.name) continue;
-    (map.get(r.accepted) || map.set(r.accepted, []).get(r.accepted)).push(r.name);
+    const byName = byAccepted.get(r.accepted) || byAccepted.set(r.accepted, new Map()).get(r.accepted);
+    const rank = r.rank ? r.rank.toLowerCase() : null;
+    if (!byName.has(r.name) || (rank && !byName.get(r.name))) byName.set(r.name, rank);
+  }
+  for (const [accepted, byName] of byAccepted) {
+    map.set(accepted, [...byName.entries()].map(([name, rank]) => ({ name, rank })));
   }
   return map;
 }
@@ -1134,8 +1173,9 @@ async function resolveGbifCrossCheck(taxa) {
   const candidateNames = new Set();
   for (const t of taxa) {
     const usage = usageMap.get(t.name);
-    const synonyms = usage ? (synonymMap.get(usage.acceptedUri) || []) : [];
-    t._synonymNames = synonyms.filter(n => n !== t.name);
+    const synonyms = (usage ? (synonymMap.get(usage.acceptedUri) || []) : []).filter(s => s.name !== t.name);
+    t._synonymNames = synonyms.map(s => s.name);
+    t._synonymRankByName = new Map(synonyms.map(s => [s.name, s.rank]));
     for (const n of t._synonymNames) candidateNames.add(n);
   }
 
@@ -1168,16 +1208,40 @@ async function resolveGbifCrossCheck(taxa) {
   );
 
   for (const t of taxa) {
-    const articleNames = new Set();
-    if (t.wikidata && t.wikipedia && LANGS.some(l => t.wikipedia[l.code])) articleNames.add(t.name);
+    // Per name: which languages actually carry an article, and which Wikidata item to
+    // link to — not just a bare name list, so "3 WP pages" is checkable at a glance
+    // instead of a curator having to reopen the per-taxon synonymy panel to find out
+    // which of these is the taxon's own article vs. a synonym's, and in which language.
+    const articleInfoByName = new Map(); // name -> { langs: Set<string>, qid: string|null }
+    if (t.wikidata && t.wikipedia) {
+      const langs = LANGS.filter(l => t.wikipedia[l.code]).map(l => l.code);
+      if (langs.length) articleInfoByName.set(t.name, { langs: new Set(langs), qid: t.wikidata.qid });
+    }
+    // GBIF's synonym list for a species routinely folds in infraspecific (subspecies/
+    // variety) names too — a subspecies having its own separate Wikipedia article isn't
+    // the same kind of "same taxonomic concept, two names, maybe merge these" situation a
+    // same-rank synonym having one would be, so it's excluded here. Only excluded when the
+    // rank is actually known and confidently differs, never when it's missing (GBIF leaves
+    // dwc:taxonRank blank on plenty of records) — an unknown rank is left in rather than
+    // silently assumed to agree OR assumed to differ.
+    const ownRank = (t.rank || '').toLowerCase();
     for (const name of (t._synonymNames || [])) {
-      const qids = wdMap.get(name) || [];
-      if (qids.some(qid => { const langs = sitelinkMap.get(qid); return langs && LANGS.some(l => langs[l.code]); })) {
-        articleNames.add(name);
+      const synRank = t._synonymRankByName ? t._synonymRankByName.get(name) : null;
+      if (synRank && ownRank && synRank !== ownRank) continue;
+      for (const qid of (wdMap.get(name) || [])) {
+        const siteLangs = sitelinkMap.get(qid);
+        const langs = siteLangs ? LANGS.filter(l => siteLangs[l.code]).map(l => l.code) : [];
+        if (!langs.length) continue;
+        const existing = articleInfoByName.get(name);
+        if (existing) langs.forEach(l => existing.langs.add(l));
+        else articleInfoByName.set(name, { langs: new Set(langs), qid });
       }
     }
-    t.synonymArticleNames = [...articleNames];
-    t.hasSynonymDuplication = articleNames.size > 1;
+    t.synonymArticleLangs = [...articleInfoByName.entries()].map(([name, info]) => ({
+      name, langs: [...info.langs], qid: info.qid, isOwnName: name === t.name,
+    }));
+    t.synonymArticleNames = t.synonymArticleLangs.map(e => e.name); // kept for the existing filter/back-compat
+    t.hasSynonymDuplication = t.synonymArticleLangs.length > 1;
 
     t.wikidataGbifMismatch = null;
     if (t.wikidata) {
@@ -1646,6 +1710,24 @@ SELECT ?wdTaxon WHERE { ?wdTaxon wdt:${prop} ${sparqlStringLiteral(String(value)
     `Wikidata lookup by ${prop}=${value}`
   );
   return rows.length ? rows[0].wdTaxon.split('/').pop() : null;
+}
+
+// An item's own P105 rank, as a lowercased English label ("genus", "section", …) — used
+// to tell which of two conflicting iNaturalist ids on one item the item's *own* existing
+// statements already back up, per detectAutonymConflict() below.
+async function fetchWikidataItemRank(qid) {
+  const rows = await sparqlFirstRowWithFallback(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?rankLabel WHERE {
+  wd:${qid} wdt:P105 ?rank .
+  ?rank rdfs:label ?rankLabel .
+  FILTER(LANG(?rankLabel) = "en")
+} LIMIT 1`,
+    `Wikidata rank for ${qid}`
+  );
+  return rows.length ? rows[0].rankLabel.toLowerCase() : null;
 }
 
 // Wikidata's items for each taxonomic rank (Q7432 = species, Q34740 = genus, …), built
@@ -2416,7 +2498,7 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
     ? `<a class="taxon-name" href="${taxonUrl(t.inatId)}" title="Open this taxon's curation page">${t.name}</a>`
     : `<span class="taxon-name">${t.name}</span>`;
   const synonymDuplicateBadge = t.hasSynonymDuplication
-    ? ` <span class="pill" title="This organism has separate Wikipedia articles under more than one name: ${escapeHtml((t.synonymArticleNames || []).join(', '))}. Consider whether these should be merged.">⚠ ${(t.synonymArticleNames || []).length} WP pages</span>`
+    ? ` <button class="small-btn synonymdup-btn" data-inat-id="${t.inatId}">⚠ ${(t.synonymArticleLangs || []).length} WP pages</button>`
     : '';
 
   return `
@@ -2506,8 +2588,10 @@ async function renderTaxonDetail(t) {
       compare the candidates on Wikidata directly and add the correct iNaturalist id (<code>P3151</code>) to
       whichever one is actually this taxon, so future runs can disambiguate automatically.`, ''));
   } else if (t.wikidataInatIdConflict) {
+    const conflictDetail = await inatIdConflictDetail(t);
+    if (myToken !== taxonDetailRenderToken) return;
     panels.push(taxonActionPanel(`Wikidata — ${t.wikidataInatIdConflict.length} iNat IDs on ${t.wikidata.qid}`,
-      inatIdConflictDetail(t) + '<p><strong>Wikipedia stub drafting is disabled</strong> until this is resolved.</p>', ''));
+      conflictDetail + '<p><strong>Wikipedia stub drafting is disabled</strong> until this is resolved.</p>', ''));
   } else if (!inatIdLinked(t)) {
     panels.push(taxonActionPanel(`Wikidata — ${t.wikidata.qid} missing its iNat ID`,
       `This item exists but has no <code>P3151</code> statement pointing back at iNaturalist taxon ${t.inatId}.
@@ -2913,11 +2997,57 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+// Not every P3151 conflict is a stale/duplicate id: iNaturalist and Wikidata sometimes
+// carry the exact same scientific name at two adjacent taxonomic ranks — an "autonym",
+// e.g. genus *Ajuga* and its own type section, both literally named "Ajuga" (found live:
+// Q158472 carries both, with no separate item for the section). Wikidata's exact-name
+// matching can't tell those two concepts apart, so both ids end up parked on one item.
+// This checks whether the two conflicting ids form a direct parent/child pair in
+// iNaturalist's own ancestry, and whether the item's own P105 rank already matches the
+// *parent* side of that pair — if so, the child isn't a duplicate to delete at all, it's a
+// genuinely separate taxon concept with no item of its own yet. Deliberately narrow: only
+// fires on a clean two-id conflict with an unambiguous parent-rank match, and only ever
+// proposes a brand-new item (a pure addition) — it never touches the existing item's own
+// statements, so nothing here can create the kind of conflicting-second-value problem this
+// tool avoids elsewhere (see gbifMismatchDetail's "wrong" case).
+async function detectAutonymConflict(t) {
+  if (!t.wikidataInatIdConflict || t.wikidataInatIdConflict.length !== 2) return null;
+  const current = String(t.inatId);
+  const otherId = t.wikidataInatIdConflict.find(v => v !== current);
+  if (!otherId) return null;
+
+  const [otherDetail, currentDetail, wdRank] = await Promise.all([
+    fetchINatTaxonDetail(Number(otherId)).catch(() => null),
+    fetchINatTaxonDetail(Number(current)).catch(() => null),
+    fetchWikidataItemRank(t.wikidata.qid).catch(() => null),
+  ]);
+  if (!otherDetail || !currentDetail || !wdRank) return null;
+
+  const otherAncestorIds = (otherDetail.ancestor_ids || []).map(String);
+  const currentAncestorIds = (currentDetail.ancestor_ids || []).map(String);
+  // current's OWN ancestor chain containing otherId means otherId sits ABOVE current —
+  // i.e. other is current's parent (and symmetrically the other way round).
+  const otherIsParentOfCurrent = currentAncestorIds.includes(otherId);
+  const currentIsParentOfOther = otherAncestorIds.includes(current);
+  if (otherIsParentOfCurrent === currentIsParentOfOther) return null; // not a clean direct pair either way
+
+  const parent = otherIsParentOfCurrent
+    ? { id: otherId, name: otherDetail.name, rank: (otherDetail.rank || '').toLowerCase() }
+    : { id: current, name: t.name, rank: (t.rank || '').toLowerCase() };
+  const child = otherIsParentOfCurrent
+    ? { id: current, name: t.name, rank: (t.rank || '').toLowerCase() }
+    : { id: otherId, name: otherDetail.name, rank: (otherDetail.rank || '').toLowerCase() };
+
+  if (wdRank !== parent.rank) return null; // item's own rank doesn't clearly back the parent side
+
+  return { parent, child, wdRank };
+}
+
 // The two (or more) P3151 values on the item aren't interchangeable clutter — exactly
 // one of them can be checked against live data (this taxon's OWN current iNaturalist
 // id, fetched this run) without a curator lifting a finger, so lead with that instead of
 // just dumping the raw id list in a tooltip.
-function inatIdConflictDetail(t) {
+async function inatIdConflictDetail(t) {
   const current = String(t.inatId);
   const items = t.wikidataInatIdConflict.map(v => {
     const isCurrent = v === current;
@@ -2930,9 +3060,68 @@ function inatIdConflictDetail(t) {
   const guidance = hasCurrent
     ? `This tool won't remove anything automatically — a stale id could still be intentional (e.g. covering a former taxon concept) — but in the common case it's safe to delete the ⚠ statement(s) after confirming the redirect.`
     : `None of the ids currently on the item match what iNaturalist calls this taxon today (<a href="https://www.inaturalist.org/taxa/${current}" target="_blank" rel="noopener">${current}</a>) — check each one individually before changing anything on Wikidata.`;
+
+  let autonymSection = '';
+  try {
+    const autonym = await detectAutonymConflict(t);
+    if (autonym) {
+      const { parent, child, wdRank } = autonym;
+      const rankQids = await getTaxonomicRankQids().catch(() => new Map());
+      const rankQid = rankQids.get(child.rank);
+      const lines = ['CREATE'];
+      lines.push(`LAST\tP31\tQ16521`); // instance of: taxon
+      if (rankQid) lines.push(`LAST\tP105\t${rankQid}\tS248\t${QS_REF_INATURALIST}`);
+      lines.push(`LAST\tP225\t${qsString(child.name)}\tS248\t${QS_REF_INATURALIST}`);
+      lines.push(`LAST\tLen\t${qsString(child.name)}`);
+      lines.push(`LAST\tLmul\t${qsString(child.name)}`);
+      lines.push(`LAST\tAen\t${qsString(child.name)}`);
+      lines.push(`LAST\tDen\t${qsString(`${child.rank || 'taxon'} of ${parent.name}`)}`);
+      lines.push(`LAST\tP171\t${t.wikidata.qid}\tS248\t${QS_REF_INATURALIST}`);
+      lines.push(`LAST\tP3151\t${qsString(child.id)}\tS248\t${QS_REF_INATURALIST}`);
+      const commands = lines.join('\n');
+      const id = `autonym-qs-${taxonActionPanelSeq++}`;
+      autonymSection = `<p class="identity-note"><strong>Likely explanation — not a duplicate:</strong> iNaturalist ids
+        <a href="https://www.inaturalist.org/taxa/${parent.id}" target="_blank" rel="noopener">${parent.id}</a> and
+        <a href="https://www.inaturalist.org/taxa/${child.id}" target="_blank" rel="noopener">${child.id}</a> are a
+        direct parent/child pair (${parent.rank} → ${child.rank}) sharing the exact same name — an autonym.
+        ${t.wikidata.qid}'s own rank (<code>P105</code> = ${escapeHtml(wdRank)}) already matches the ${parent.rank},
+        so ${child.id} isn't a stale id to delete — it's a genuinely separate, ${child.rank}-rank taxon concept
+        with no Wikidata item of its own yet. Proposed QuickStatements to create one, linked back here via
+        <code>P171</code> (a pure addition — this existing item isn't touched):
+        <div class="stub-toolbar">
+          <button class="small-btn copy-stub-btn" data-target="${id}">Copy commands</button>
+          <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+        </div>
+        <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+        Once that new item exists and looks right, remove the misplaced <code>P3151</code> = ${child.id} statement
+        from ${t.wikidata.qid} itself (manually — this tool never removes statements).
+      </p>`;
+    }
+  } catch (e) { /* informational extra only — the base conflict listing above still stands without it */ }
+
   return `<em>${t.name}</em> — <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a> carries ${t.wikidataInatIdConflict.length} different iNaturalist taxon id (P3151) statements:
     <ul>${items}</ul>
-    ${guidance}`;
+    ${guidance}
+    ${autonymSection}`;
+}
+
+// The "N WP pages" badge's count includes the taxon's OWN article (if it has one) plus
+// every synonym's — a curator seeing "3" after reading a synonym panel that only listed 2
+// synonym articles has no way to tell the count also folds in the taxon's own coverage,
+// nor which language each one is in, without reopening that panel. This spells all of it
+// out directly, same "clickable badge, not a hover tooltip" convention as every other
+// warning badge here.
+function synonymDuplicateDetail(t) {
+  const items = (t.synonymArticleLangs || []).map(e => {
+    const label = e.isOwnName ? `<em>${escapeHtml(e.name)}</em> — this taxon's own article` : `<em>${escapeHtml(e.name)}</em> — synonym`;
+    const link = e.qid ? ` (<a href="https://www.wikidata.org/wiki/${e.qid}" target="_blank" rel="noopener">${e.qid}</a>)` : '';
+    return `<li>${label}${link} — ${e.langs.join('/')}</li>`;
+  }).join('');
+  return `<em>${t.name}</em> has separate Wikipedia coverage under ${(t.synonymArticleLangs || []).length} different names:
+    <ul>${items}</ul>
+    Consider whether these should be merged into one article, or cross-linked. Infraspecific
+    (subspecies/variety) synonyms with a confidently different rank are excluded from this count —
+    those having their own article is normal, not a sign of the same concept being duplicated.`;
 }
 
 // The badge alone only ever said "needs curation" with the actual comparison hidden in a
@@ -2984,7 +3173,7 @@ async function gbifMismatchDetail(t) {
     <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
 }
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.inatconflict-btn');
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
@@ -2997,10 +3186,19 @@ document.addEventListener('click', (e) => {
     nextRow.remove();
     return;
   }
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
   const detailRow = document.createElement('tr');
   detailRow.className = 'bhl-row inatconflict-row';
-  detailRow.innerHTML = `<td></td><td colspan="12">${inatIdConflictDetail(t)}</td>`;
+  try {
+    detailRow.innerHTML = `<td></td><td colspan="12">${await inatIdConflictDetail(t)}</td>`;
+  } catch (err) {
+    detailRow.innerHTML = `<td></td><td colspan="12">Could not build details: ${err.message}</td>`;
+  }
   row.after(detailRow);
+  btn.disabled = false;
+  btn.textContent = originalText;
 });
 
 document.addEventListener('click', async (e) => {
@@ -3028,6 +3226,24 @@ document.addEventListener('click', async (e) => {
   row.after(detailRow);
   btn.disabled = false;
   btn.textContent = originalText;
+});
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.synonymdup-btn');
+  if (!btn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(btn.dataset.inatId));
+  if (!t || !t.hasSynonymDuplication) return;
+
+  const row = btn.closest('tr');
+  const nextRow = row.nextElementSibling;
+  if (nextRow && nextRow.classList.contains('synonymdup-row')) {
+    nextRow.remove();
+    return;
+  }
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'bhl-row synonymdup-row';
+  detailRow.innerHTML = `<td></td><td colspan="12">${synonymDuplicateDetail(t)}</td>`;
+  row.after(detailRow);
 });
 
 document.addEventListener('click', async (e) => {
