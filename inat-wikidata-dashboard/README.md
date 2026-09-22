@@ -182,11 +182,18 @@ your own value, and click **Load observations**.
 9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
    null`), click "propose QuickStatements" to draft a
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
-   - `P31` taxon, `P105` rank (resolved live from Wikidata's own taxonomic-rank items rather than
-     a hardcoded table — see `getTaxonomicRankQids()`), `P225` = the scientific name, plus a label
-     in **both** `en` and `mul` (language-independent — taxon names don't vary by language, and an
-     item with only one language label trips Wikidata's "label in language constraint"; `en`+`mul`
-     is the same pattern this org's own `treatmentbot` uses on the taxa it creates).
+   - `P31` taxon (this tool's own modelling choice, not a fact any linked database asserts, so
+     deliberately left unreferenced), `P105` rank (resolved live from Wikidata's own
+     taxonomic-rank items rather than a hardcoded table — see `getTaxonomicRankQids()`), `P225` =
+     the scientific name, plus a label in **both** `en` and `mul` (language-independent — taxon
+     names don't vary by language, and an item with only one language label trips Wikidata's
+     "label in language constraint"; `en`+`mul` is the same pattern this org's own `treatmentbot`
+     uses on the taxa it creates). `P105` and `P225` get the same multi-source referencing as
+     `P171` below: iNaturalist is always cited (it's where `t.rank`/`t.name` came from), and GBIF's
+     `species/match` result adds its own reference block wherever it independently reports the
+     same rank/name — likewise NCBI's `esearch` for the name, since a hit there only happens on an
+     exact scientific-name match in the first place. A taxon GBIF/NCBI don't confidently match
+     (or don't match on the *same* value) just gets the one iNaturalist reference, same as before.
    - `P3151` (iNaturalist taxon id), `P846` (GBIF backbone id, from a live `species/match` lookup)
      and `P685` (NCBI Taxonomy id, from a live `esearch` lookup scoped to `[scientific name]` so an
      ambiguous common name never silently matches the wrong lineage) — each only added when that
@@ -206,11 +213,11 @@ your own value, and click **Load observations**.
      When lineages land on *different* items, `P171` is omitted and the panel names the discrepancy
      instead of guessing which database is right (a genuine cross-database disagreement, not
      something this tool should paper over).
-   - Every derived claim carries a `stated in` (`P248`) reference back to whichever source actually
-     supplied it — iNaturalist (Q16958215), GBIF (Q1531570) or NCBI (Q82494) — the same referencing
-     convention used by
+   - Every derived claim except `P31` carries at least one `stated in` (`P248`) reference back to
+     whichever source actually supplied it — iNaturalist (Q16958215), GBIF (Q1531570) or NCBI
+     (Q82494), the same referencing convention used by
      [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker)'s
-     `taxon.py`.
+     `taxon.py` — and, per the corroboration logic above, sometimes more than one.
 
    This drafts an edit; it never runs one. Paste the copied commands into QuickStatements
    yourself after reviewing them — in particular, QuickStatements' own duplicate-item warnings
