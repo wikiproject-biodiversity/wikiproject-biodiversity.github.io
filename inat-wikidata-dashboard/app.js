@@ -918,6 +918,18 @@ async function sparqlAllRowsWithFallback(query, label) {
 // UNIONs with dwc:species/dwc:scientificName are just a safety net in case some record
 // lacks a label. gbifv:acceptedNameUsage is only present when the matched record is
 // itself a synonym, pointing at the accepted one.
+// The reverse lookup of fetchGbifUsage: given a GBIF record's own URI (not its name),
+// resolve its rdfs:label. Needed when the CURRENT taxon is itself a GBIF synonym —
+// fetchGbifUsage's `acceptedUri` is only a URI, with no name attached, but the synonymy
+// panel needs the accepted usage's own name to look up ITS Wikidata item.
+async function fetchGbifLabelForUri(uri) {
+  const rows = await sparqlViaComunica(
+    `PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> SELECT ?name WHERE { <${uri}> rdfs:label ?name }`,
+    GBIF_ENDPOINT, { silent: true, label: `GBIF label for ${uri}` }
+  );
+  return rows.length ? rows[0].name : null;
+}
+
 async function fetchGbifUsage(name) {
   const query = `PREFIX dwc: <http://rs.tdwg.org/dwc/terms/>
 PREFIX gbifv: <https://rs.gbif.org/terms/>
@@ -1098,7 +1110,28 @@ async function buildSynonymyInfo(t, ctx) {
       // P105) — fetched here (cached after the first call, so later panels are free)
       // rather than making synonymyPanel() itself async just for this.
       const rankQids = await getTaxonomicRankQids().catch(() => new Map());
-      info.synonyms = { names: synonymNames, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym };
+
+      // The Wikidata item every synonym should link P1420 at. When t itself is NOT a GBIF
+      // synonym, that's just t.wikidata (this taxon's own confident match). When t IS a
+      // synonym, t.wikidata (if any) is the SYNONYM's own item, not the accepted usage's —
+      // using it would link every other synonym to the wrong item. So resolve the accepted
+      // usage's own name (fetchGbifUsage only gives its URI) and look up ITS Wikidata item
+      // instead — only used when that resolves to exactly one confident match, same
+      // "never guess" standard as everywhere else in this tool.
+      let acceptedQid = null;
+      let acceptedName = null;
+      if (usage.isSynonym) {
+        acceptedName = await fetchGbifLabelForUri(usage.acceptedUri).catch(() => null);
+        if (acceptedName) {
+          const matches = (await fetchWikidataItemsForNames([acceptedName])).get(acceptedName) || [];
+          if (matches.length === 1) acceptedQid = matches[0];
+        }
+      } else if (t.wikidata && t.wikidata.qid) {
+        acceptedQid = t.wikidata.qid;
+        acceptedName = t.name;
+      }
+
+      info.synonyms = { names: synonymNames, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri: usage.acceptedUri, isSynonym: usage.isSynonym, acceptedQid, acceptedName };
     }
   } catch (e) { info.synonymsError = e.message; }
 
@@ -1130,16 +1163,16 @@ function synonymyPanel(t, info) {
   }
 
   if (info.synonyms) {
-    const { names, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym } = info.synonyms;
+    const { names, rankByName, gbifIdByName, rankQids, wdMatches, sitelinks, synLinks, acceptedUri, isSynonym, acceptedQid, acceptedName } = info.synonyms;
     const onWikidataNames = names.filter(n => (wdMatches.get(n) || []).length);
     const withArticleNames = [];
     let rescue = null;
-    // Only offered when this taxon itself is confidently the *accepted* usage's Wikidata
-    // item — not when t.wikidata is ambiguous/missing, and not when t itself is a GBIF
-    // synonym (its "accepted" item is a different one than t.wikidata, not derivable here
-    // without guessing). Same conservative standard as the rest of this tool's QuickStatements
-    // proposals: only draft what's actually known, never the plausible-looking guess.
-    const canProposeAcceptedQid = !isSynonym && t.wikidata && t.wikidata.qid;
+    // Only offered when the accepted usage's own Wikidata item is confidently known —
+    // either this taxon itself IS that item (the common case), or (when this taxon is
+    // itself a GBIF synonym) its accepted usage's own name resolved to exactly one
+    // Wikidata item (buildSynonymyInfo). Same conservative standard as the rest of this
+    // tool's QuickStatements proposals: only draft what's actually known, never guess.
+    const canProposeAcceptedQid = !!acceptedQid;
     // GBIF's synonym list for a species routinely mixes in infraspecific (subspecies/
     // variety) names folded into it — shown here so a curator can tell "Alchemilla
     // montana (species)" apart from "Alchemilla mollis aprica (variety)" at a glance,
@@ -1165,7 +1198,7 @@ function synonymyPanel(t, info) {
           block.push(`LAST\tLen\t${qsString(name)}`);
           block.push(`LAST\tLmul\t${qsString(name)}`);
           block.push(`LAST\tAen\t${qsString(name)}`);
-          block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym of ${t.name}`)}`);
+          block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym of ${acceptedName}`)}`);
           // The synonym's own GBIF backbone id, when the record it came from had one —
           // same self-referential "GBIF says this is GBIF id X" pattern buildQuickStatements
           // already uses for the main taxon's own P846.
@@ -1175,7 +1208,7 @@ function synonymyPanel(t, info) {
           // specific GBIF record (not just "GBIF" the database) whenever its id is known —
           // same P846-as-reference-snak pattern as the batch P1420 additions below.
           const p1420Ref = gbifId ? `S248\t${QS_REF_GBIF}\tS846\t${qsString(gbifId)}` : `S248\t${QS_REF_GBIF}`;
-          block.push(`LAST\tP1420\t${t.wikidata.qid}\t${p1420Ref}`);
+          block.push(`LAST\tP1420\t${acceptedQid}\t${p1420Ref}`);
           createBlocks.push(block.join('\n'));
         }
         // P1420 carries a Wikidata "inverse constraint" (the accepted item is expected to
@@ -1191,10 +1224,10 @@ function synonymyPanel(t, info) {
         if (withArticle.length) withArticleNames.push({ name, langs: withArticle.map(l => l.code) });
         const isSyn = synLinks.some(l => l.item === qid || l.synOf === qid);
         if (!t.wikidata && withArticle.length && !rescue) rescue = { name, qid, langs: withArticle.map(l => l.code) };
-        const canLink = !isSyn && canProposeAcceptedQid && qid !== t.wikidata.qid;
-        if (canLink) { linkLines.push(...p1420Lines(qid, t.wikidata.qid, gbifId)); linkedSynonymCount++; }
+        const canLink = !isSyn && canProposeAcceptedQid && qid !== acceptedQid;
+        if (canLink) { linkLines.push(...p1420Lines(qid, acceptedQid, gbifId)); linkedSynonymCount++; }
         const linkBtn = canLink
-          ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${t.wikidata.qid}" data-accepted-name="${escapeHtml(t.name)}" data-gbif-id="${gbifId || ''}">propose QuickStatements</button>`
+          ? ` <button class="small-btn p1420-add-btn" data-syn-qid="${qid}" data-syn-name="${escapeHtml(name)}" data-accepted-qid="${acceptedQid}" data-accepted-name="${escapeHtml(acceptedName)}" data-gbif-id="${gbifId || ''}">propose QuickStatements</button>`
           : '';
         return `<li><a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a> — <em>${escapeHtml(name)}</em>${rankLabel(rank)}` +
           `${withArticle.length ? ` — has ${withArticle.map(l => l.code).join('/')} Wikipedia` : ' — no Wikipedia article'}` +
@@ -1205,7 +1238,13 @@ function synonymyPanel(t, info) {
       ? `<p class="identity-note"><strong>Possible rescue:</strong> this taxon wasn't matched to Wikidata under its iNaturalist name, but its GBIF synonym <em>${escapeHtml(rescue.name)}</em> resolves to <a href="https://www.wikidata.org/wiki/${rescue.qid}" target="_blank" rel="noopener">${rescue.qid}</a>, which already has a ${rescue.langs.join('/')} Wikipedia article — very likely the right item. Consider adding <em>${escapeHtml(t.name)}</em> as an alias there, or as an additional P225 value.</p>`
       : '';
     const gbifNote = isSynonym
-      ? `<p class="identity-note"><em>${escapeHtml(t.name)}</em> is itself a GBIF synonym — counts below are for its accepted usage.</p>`
+      ? `<p class="identity-note"><em>${escapeHtml(t.name)}</em> is itself a GBIF synonym — counts below are for its accepted usage${
+          acceptedQid
+            ? `, <em>${escapeHtml(acceptedName)}</em> (<a href="https://www.wikidata.org/wiki/${acceptedQid}" target="_blank" rel="noopener">${acceptedQid}</a>), resolved so P1420 links/creates below can still target it`
+            : acceptedName
+              ? `, <em>${escapeHtml(acceptedName)}</em> — no confident single Wikidata match for that name, so no P1420 links or CREATE drafts are offered below`
+              : ' — its name could not be resolved on GBIF, so no P1420 links or CREATE drafts are offered below'
+        }.</p>`
       : '';
     const articleLangSummary = withArticleNames.length
       ? ` (${withArticleNames.map(a => a.langs.join('/')).join(', ')})`
@@ -1218,7 +1257,7 @@ function synonymyPanel(t, info) {
           if (linkedSynonymCount) parts.push(`link ${linkedSynonymCount} existing item${linkedSynonymCount === 1 ? '' : 's'} (P1420, both directions)`);
           if (createBlocks.length) parts.push(`create ${createBlocks.length} new item${createBlocks.length === 1 ? '' : 's'}`);
           const createCaveat = createBlocks.length
-            ? ` A new item's own <code>P1420</code> only points one way (at ${t.wikidata.qid}) — QuickStatements has no way to reference a not-yet-created item as a value, so once it's created, come back and add the inverse statement (<code>P1420</code> → the new item's assigned QID) on ${t.wikidata.qid} by hand.`
+            ? ` A new item's own <code>P1420</code> only points one way (at ${acceptedQid}) — QuickStatements has no way to reference a not-yet-created item as a value, so once it's created, come back and add the inverse statement (<code>P1420</code> → the new item's assigned QID) on ${acceptedQid} by hand.`
             : '';
           return `<p><strong>Fix all of the above at once</strong> — ${parts.join(' and ')}, one QuickStatements batch. Every <code>P1420</code> addition between two <em>existing</em> items goes both directions — Wikidata's own constraint checker expects the accepted item to link back to the synonym, not just the other way round.${createCaveat}</p>
             <div class="stub-toolbar">
