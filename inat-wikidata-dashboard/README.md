@@ -109,7 +109,30 @@ your own value, and click **Load observations**.
    treatments exist per species (`dwc:genus` + `dwc:species`, joined via
    `treatment:augmentsTaxonConcept` / `definesTaxonConcept`). Coverage is narrow
    (only taxa with a digitized revision or original description) but precise —
-   exact treatment title, DOI and author, shown on click.
+   exact treatment title, DOI and author, shown on click. Wikidata already models
+   individual Plazi treatments as their own items — see e.g.
+   [Q134378425](https://www.wikidata.org/wiki/Q134378425) — created by
+   [treatmentbot](https://github.com/wikiproject-biodiversity/treatmentbot), which has
+   since stopped running. Each treatment shown is checked against Wikidata too
+   (`fetchWikidataTreatmentQids()`, batched, exact match on `P2888` — the same check
+   the bot itself ran before creating an item) and, for any missing one, offers
+   "propose QuickStatements" — a `CREATE` matching the bot's own confirmed schema
+   (`buildTreatmentCreateQS()`): `P31` → `Q32945461` (taxonomic treatment), `P1992`
+   (Plazi ID, the dashed-UUID form — `plaziDashedId()` converts the bare-UUID form
+   Plazi's own RDF uses), `P2888` (exact match, the treatment's own URI), an English
+   label and description, "taxonomic treatment" — nothing else, verified directly
+   against that live item and cross-checked against the bot's own source
+   (`functions.py`, `process_treatments()`). The bot's own reference — `P248`
+   ("stated in") → `Q54857867` (TreatmentBank) plus `P1992` again as a second snak in
+   that *same* reference, not a separate one — is reused as-is. Deliberately narrower
+   than the bot itself: it also creates/updates a taxon item (`P225`/`P105`/`P171`/…,
+   linked to the treatment via `P10594`) and a publication item resolved by DOI — not
+   reproduced here, since this tool already has its own, independently-verified
+   versions of both (`buildQuickStatements`, `fetchWikidataItemByDoi`/
+   `buildPublicationQS`) and duplicating the bot's idle ones would risk drifting out
+   of sync. Two or more missing treatments for one species get a combined batch (same
+   "fix them all in one QuickStatements run" convention as the synonymy panel), one
+   treatment gets its own per-row toggle draft.
 5. **BHL literature (on demand)** — the "look up" button on each row runs a genuinely
    *federated* SPARQL query against a personal experimental Biodiversity Heritage
    Library knowledge graph (`koetai.semscape.org`): it starts in a named graph of BHL
