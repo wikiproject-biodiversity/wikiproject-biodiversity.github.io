@@ -317,9 +317,21 @@ your own value, and click **Load observations**.
       already has an article, that's flagged as a likely rescue — the taxon is probably
       already covered under a name Wikidata prefers, worth an alias rather than a new
       `CREATE`. A synonym that resolves to a Wikidata item but isn't `P1420`-linked gets its
-      own "propose QuickStatements" button (`p1420Lines()`) — offered only when this taxon
-      itself is confidently the accepted usage's own Wikidata item (not ambiguous, not
-      itself a GBIF synonym), so the target side of the link is never a guess. Proposes
+      own "propose QuickStatements" button (`p1420Lines()`) — offered whenever the accepted
+      usage's own Wikidata item is confidently known (`acceptedQid`/`acceptedName` in
+      `buildSynonymyInfo`): the common case is this taxon itself, confidently matched and
+      not ambiguous; but when the taxon being viewed is *itself* a GBIF synonym, `t.wikidata`
+      is the synonym's own item, not the accepted usage's, so using it would link every
+      other synonym to the wrong item. Found live testing exactly this — *Lemmaphyllum
+      microphyllum* (itself a synonym of *Lepisorus microphyllus*) showed 8 synonyms with
+      existing Wikidata items and zero "propose QuickStatements" buttons, because the
+      feature required `t.wikidata` to be the accepted item and simply gave up rather than
+      resolving what it actually was. Fixed by resolving the accepted usage's own name
+      first (`fetchGbifLabelForUri()` — `fetchGbifUsage` only returns its URI, not its
+      name) and looking up *that* name's Wikidata item instead, used only when it resolves
+      to exactly one confident match — same conservative standard as everywhere else. The
+      "is itself a GBIF synonym" note above the list now says which item was resolved (or
+      why none was), instead of just noting the fact and stopping there. Proposes
       *both* directions, `${synonymQid}\tP1420\t${acceptedQid}` and the reverse — Wikidata's
       own constraint checker flags a one-way `P1420` as a potential issue (confirmed live:
       its UI on a real one-directional addition), expecting the accepted item to link back.
