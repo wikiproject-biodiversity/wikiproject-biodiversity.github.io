@@ -539,6 +539,64 @@ LIMIT 20`;
   return sparqlViaComunica(query, PLAZI_ENDPOINT, { label: `Plazi detail for "${genus} ${species}"` });
 }
 
+// Wikidata already models individual Plazi taxonomic treatments as their own items — see
+// e.g. Q134378425 (created by wikiproject-biodiversity/treatmentbot, which has since
+// stopped running — https://github.com/wikiproject-biodiversity/treatmentbot). This
+// mirrors that bot's own confirmed schema for the treatments it never got to: verified
+// directly against that live item (P31, P1992, P2888, an English label and description,
+// nothing else) and cross-checked against the bot's own source (`functions.py`,
+// `process_treatments()`) — `treatmentstatements`/`treatment_reference` there are the
+// exact source of the schema below. The bot also creates/updates a separate taxon item
+// (P225/P105/P171/…) and links it to the treatment via P10594, and creates/updates a
+// publication item referenced by DOI — deliberately not reproduced here: this tool
+// already has its own, independently-verified taxon `CREATE` flow (`buildQuickStatements`)
+// and DOI-to-Wikidata resolution (`fetchWikidataItemByDoi`/`buildPublicationQS`), so
+// duplicating the bot's own (now-idle) versions of those would risk drifting out of sync
+// with this tool's — this only ever proposes the treatment item itself.
+
+// Plazi's treatment URI is the bare 32-hex UUID with no dashes
+// (http://treatment.plazi.org/id/<uuid>); Wikidata's own Plazi ID property (P1992) uses
+// the dashed 8-4-4-4-12 form instead — same UUID, two formats, both needed below.
+function plaziDashedId(treatmentUri) {
+  const uuid = treatmentUri.split('/').pop();
+  return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
+}
+
+// Same P2888-exact-match check the bot itself runs before creating a treatment item
+// (`wdTreatmentQuery` in functions.py) — batched here across every treatment for the
+// current taxon instead of one query per treatment.
+async function fetchWikidataTreatmentQids(treatmentUris) {
+  const map = new Map();
+  if (!treatmentUris.length) return map;
+  const values = treatmentUris.map(u => `<${u}>`).join(' ');
+  const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?uri ?item WHERE { VALUES ?uri { ${values} } ?item wdt:P2888 ?uri }`;
+  const rows = await sparqlAllRowsWithFallback(query, 'Wikidata lookup for Plazi treatments');
+  for (const r of rows) {
+    if (!/\/Q\d+$/.test(r.item)) continue;
+    map.set(r.uri, r.item.split('/').pop());
+  }
+  return map;
+}
+
+// One CREATE per treatment, matching the bot's schema exactly (see the block comment
+// above `plaziDashedId`). `r` is one row from fetchPlaziDetail: {t, title, doi, creator}.
+function buildTreatmentCreateQS(r) {
+  const dashedId = plaziDashedId(r.t);
+  // Both snaks belong to the SAME reference (S1992 right after S248, no "!" prefix) —
+  // exactly how the bot's own `treatment_reference` list is built (two snaks, one
+  // reference), not two separate references.
+  const ref = `S248\t${QS_REF_TREATMENTBANK}\tS1992\t${qsString(dashedId)}`;
+  const title = r.title || r.t.split('/').pop();
+  const lines = ['CREATE'];
+  lines.push(`LAST\tP31\tQ32945461\t${ref}`); // instance of: taxonomic treatment
+  lines.push(`LAST\tP1992\t${qsString(dashedId)}\t${ref}`); // Plazi ID
+  lines.push(`LAST\tP2888\t${qsString(r.t)}\t${ref}`); // exact match: the treatment's own URI
+  lines.push(`LAST\tLen\t${qsString(title)}`);
+  lines.push(`LAST\tDen\t"taxonomic treatment"`);
+  return lines.join('\n');
+}
+
 // ---------- Wikimedia Commons (license check + duplicate check) ----------
 
 // Batch step: for every taxon with a Commons-compatible observation photo, check
@@ -1852,6 +1910,7 @@ function editUrl(lang, title) {
 const QS_REF_INATURALIST = 'Q16958215'; // "stated in" target for iNaturalist-sourced claims
 const QS_REF_GBIF = 'Q1531570'; // "stated in" target for GBIF-sourced claims
 const QS_REF_NCBI = 'Q82494'; // "stated in" target for NCBI Taxonomy-sourced claims
+const QS_REF_TREATMENTBANK = 'Q54857867'; // "stated in" target for Plazi TreatmentBank-sourced claims
 
 function qsString(s) {
   return JSON.stringify(s); // QuickStatements string literals use the same "…" + backslash escaping as JSON
@@ -3287,14 +3346,37 @@ document.addEventListener('click', async (e) => {
   }
   try {
     const results = await fetchPlaziDetail(genus, species);
+    const wdQidByUri = await fetchWikidataTreatmentQids(results.map(r => r.t)).catch(() => new Map());
+    const missing = [];
     plaziRow = document.createElement('tr');
     plaziRow.className = 'bhl-row plazi-row';
     const items = results.map(r => {
       const title = r.title || '(untitled treatment)';
       const doiLink = r.doi ? ` <a href="${r.doi}" target="_blank" rel="noopener">↗</a>` : '';
-      return `<li>${title}${r.creator ? ` <em>(${r.creator})</em>` : ''}${doiLink}</li>`;
+      const qid = wdQidByUri.get(r.t);
+      let wdCell;
+      if (qid) {
+        wdCell = ` — <a href="https://www.wikidata.org/wiki/${qid}" target="_blank" rel="noopener">${qid}</a>`;
+      } else {
+        missing.push({ ...r, title });
+        wdCell = ` — <span class="pill">not on Wikidata</span> <button class="small-btn treatment-qs-btn" data-treatment-uri="${escapeHtml(r.t)}" data-title="${escapeHtml(title)}">propose QuickStatements</button>`;
+      }
+      return `<li>${escapeHtml(title)}${r.creator ? ` <em>(${escapeHtml(r.creator)})</em>` : ''}${doiLink}${wdCell}</li>`;
     }).join('');
-    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul></td>`;
+    let batchSection = '';
+    if (missing.length > 1) {
+      const batchId = `treatment-batch-qs-${taxonActionPanelSeq++}`;
+      const commands = missing.map(buildTreatmentCreateQS).join('\n');
+      batchSection = `<p><strong>${missing.length} treatments missing a Wikidata item</strong> — one QuickStatements batch to create all of them,
+        matching the schema <a href="https://github.com/wikiproject-biodiversity/treatmentbot" target="_blank" rel="noopener">treatmentbot</a>
+        used before it stopped running:</p>
+        <div class="stub-toolbar">
+          <button class="small-btn copy-stub-btn" data-target="${batchId}">Copy commands</button>
+          <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+        </div>
+        <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
+    }
+    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul>${batchSection}</td>`;
     row.after(plaziRow);
   } catch (err) {
     plaziRow = document.createElement('tr');
@@ -3305,6 +3387,38 @@ document.addEventListener('click', async (e) => {
     btn.disabled = false;
     btn.textContent = originalText;
   }
+});
+
+// Single-treatment version of the batch above — same toggle-box convention as
+// .p1420-add-btn: click to show the draft, click again (or its own Cancel button) to
+// close it instead of stacking a duplicate.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.treatment-qs-btn');
+  if (!btn) return;
+  const next = btn.nextElementSibling;
+  if (next && next.classList.contains('treatment-qs-draft')) {
+    next.remove();
+    return;
+  }
+  const { treatmentUri, title } = btn.dataset;
+  const commands = buildTreatmentCreateQS({ t: treatmentUri, title });
+  const rowId = `treatment-qs-${Date.now()}`;
+  const wrap = document.createElement('div');
+  wrap.className = 'treatment-qs-draft';
+  wrap.style.margin = '6px 0';
+  wrap.innerHTML = `
+    Proposed QuickStatements to create a Wikidata item for this treatment, matching
+    <a href="https://github.com/wikiproject-biodiversity/treatmentbot" target="_blank" rel="noopener">treatmentbot</a>'s
+    own schema:
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      <button class="small-btn treatment-qs-cancel-btn">✕ Cancel</button>
+    </div>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+  `;
+  wrap.querySelector('.treatment-qs-cancel-btn').addEventListener('click', () => wrap.remove());
+  btn.insertAdjacentElement('afterend', wrap);
 });
 
 // Not every P3151 conflict is a stale/duplicate id: iNaturalist and Wikidata sometimes
