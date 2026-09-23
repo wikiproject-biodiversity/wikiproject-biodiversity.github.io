@@ -766,6 +766,130 @@ function compareTaxonomySources(ctx) {
   return { sourceNames: sources.map(([name]) => name), disagreements };
 }
 
+// ---------- Taxonomic tree ----------
+// The full ancestor lineage this taxon sits in, as iNaturalist models it (every rank it
+// tracks — not just the 7 coarse ones compareTaxonomySources uses, so a "tribe" or
+// "subfamily" node shows up too), cross-checked against GBIF at the 6 ranks GBIF's own
+// REST match reports, and against Wikidata by exact name — an inventory of which
+// ancestors are missing their own item, with QuickStatements to create them, `P171`
+// pointing at whichever real parent already exists.
+async function buildTaxonomicTreeInfo(t, ctx) {
+  const ancestors = (ctx && ctx.detail && ctx.detail.ancestors) || [];
+  const nodes = [...ancestors, { id: t.inatId, name: t.name, rank: t.rank }]
+    .map(a => ({ id: a.id, name: a.name, rank: (a.rank || '').toLowerCase() }))
+    .filter(n => n.name && n.rank);
+
+  const names = [...new Set(nodes.map(n => n.name))];
+  const [wdMatches, rankQids] = await Promise.all([
+    fetchWikidataItemsForNames(names),
+    getTaxonomicRankQids().catch(() => new Map()),
+  ]);
+  const gbif = ctx ? ctx.gbif : null;
+
+  for (const node of nodes) {
+    const qids = wdMatches.get(node.name) || [];
+    node.qid = qids.length === 1 ? qids[0] : null;
+    node.ambiguousQids = qids.length > 1 ? qids : null;
+    node.exists = qids.length >= 1;
+    const gbifField = GBIF_RANK_KEY_FIELD[node.rank];
+    if (gbif && gbifField && gbif[node.rank]) {
+      node.gbifAgrees = gbif[node.rank] === node.name;
+      node.gbifKey = node.gbifAgrees && gbif[gbifField] ? String(gbif[gbifField]) : null;
+      node.gbifDisagreeName = node.gbifAgrees ? null : gbif[node.rank];
+    } else {
+      node.gbifAgrees = null; // no opinion at this rank — finer than GBIF's 6, or no GBIF match at all
+      node.gbifKey = null;
+      node.gbifDisagreeName = null;
+    }
+  }
+
+  // One CREATE per missing node, root to leaf. `P171` only ever names a real, already-
+  // resolved QID — never another node from this same batch: QuickStatements' `LAST`
+  // placeholder only works as a CREATE's own subject, never as a value another statement
+  // (on a different entity, or even the very next CREATE) can point at (confirmed against
+  // QuickStatements' own docs). So when a node's immediate parent is ALSO missing, its
+  // `P171` is left out rather than drafting syntax that can't work — noted per-node so it
+  // isn't just silently incomplete, matching the same honesty already used for the
+  // reverse-P1420-on-a-new-item case in the synonymy panel above.
+  const missing = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node.exists || node.ambiguousQids) continue;
+    const parent = i > 0 ? nodes[i - 1] : null;
+    const rankQid = rankQids.get(node.rank);
+    const block = ['CREATE'];
+    block.push(`LAST\tP31\tQ16521`); // instance of: taxon
+    const refs = node.gbifKey ? [QS_REF_INATURALIST, QS_REF_GBIF] : [QS_REF_INATURALIST];
+    if (rankQid) block.push(`LAST\tP105\t${rankQid}\t${qsReferenceBlock(refs)}`);
+    block.push(`LAST\tP225\t${qsString(node.name)}\t${qsReferenceBlock(refs)}`);
+    block.push(`LAST\tLen\t${qsString(node.name)}`);
+    block.push(`LAST\tLmul\t${qsString(node.name)}`);
+    block.push(`LAST\tAen\t${qsString(node.name)}`);
+    block.push(`LAST\tDen\t${qsString(`${node.rank}${parent ? ` in ${parent.name}` : ''}`)}`);
+    if (node.gbifKey) block.push(`LAST\tP846\t${qsString(node.gbifKey)}\tS248\t${QS_REF_GBIF}`);
+    const parentResolved = parent && parent.exists && parent.qid;
+    if (parentResolved) block.push(`LAST\tP171\t${parent.qid}\tS248\t${QS_REF_INATURALIST}`);
+    missing.push({ node, parent, parentResolved, commands: block.join('\n') });
+  }
+
+  return { nodes, missing };
+}
+
+function taxonomicTreePanel(t, info) {
+  const { nodes, missing } = info;
+  if (!nodes.length) return '';
+
+  const rows = nodes.map(node => {
+    const wdCell = node.qid
+      ? `<a href="https://www.wikidata.org/wiki/${node.qid}" target="_blank" rel="noopener">${node.qid}</a>`
+      : node.ambiguousQids
+        ? `<span class="pill" title="${node.ambiguousQids.length} Wikidata items share this exact name">⚠ ambiguous (${node.ambiguousQids.length})</span>`
+        : `<span class="pill">missing</span>`;
+    const gbifCell = node.gbifAgrees === true
+      ? `✓${node.gbifKey ? ` <a href="https://www.gbif.org/species/${node.gbifKey}" target="_blank" rel="noopener">GBIF ${node.gbifKey}</a>` : ''}`
+      : node.gbifAgrees === false
+        ? `<span class="pill-warn" title="GBIF reports ${escapeHtml(node.gbifDisagreeName)} at this rank instead">⚠ ${escapeHtml(node.gbifDisagreeName)}</span>`
+        : '<span class="rank-label">n/a</span>';
+    return `<tr>
+      <td class="rank-label">${escapeHtml(node.rank)}</td>
+      <td><a href="https://www.inaturalist.org/taxa/${node.id}" target="_blank" rel="noopener">${escapeHtml(node.name)}</a></td>
+      <td>${gbifCell}</td>
+      <td>${wdCell}</td>
+    </tr>`;
+  }).join('');
+
+  const missingCount = missing.length;
+  const resolvedParentCount = missing.filter(m => m.parentResolved).length;
+  let batchSection = '';
+  if (missingCount) {
+    const batchId = `tree-batch-qs-${taxonActionPanelSeq++}`;
+    const commands = missing.map(m => m.commands).join('\n');
+    const unresolvedNote = missingCount > resolvedParentCount
+      ? ` ${missingCount - resolvedParentCount} of these don't get a <code>P171</code> at all — their own immediate parent is
+        also missing here, and QuickStatements can't reference a not-yet-created item as a value. Run this batch, note the
+        new QIDs, then add those <code>P171</code> statements by hand (or regenerate this panel once the parent exists).`
+      : '';
+    batchSection = `<p><strong>${missingCount} ancestor${missingCount === 1 ? '' : 's'} missing a Wikidata item</strong> —
+      one QuickStatements batch to create ${missingCount === 1 ? 'it' : 'all of them'}, ${resolvedParentCount} already
+      linked to a real parent via <code>P171</code>.${unresolvedNote}</p>
+      <div class="stub-toolbar">
+        <button class="small-btn copy-stub-btn" data-target="${batchId}">Copy commands</button>
+        <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      </div>
+      <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+      <p class="identity-note">New items are drafts — review each one for notability and near-duplicates before running.</p>`;
+  } else {
+    batchSection = `<p class="identity-note">Every ancestor in this lineage already has a Wikidata item.</p>`;
+  }
+
+  return `<div class="identity-panel taxon-action-panel"><h3>Taxonomic tree</h3>
+    <div class="synonymy-list-section">
+      <table class="tree-table"><tbody>${rows}</tbody></table>
+      ${batchSection}
+    </div>
+  </div>`;
+}
+
 // ---------- Synonymy & homonymy ----------
 // On-demand, per-taxon only (curation page) — the nested-OPTIONAL and multi-name lookups
 // below don't scale to a batch of hundreds like the rest of the pipeline does, so this
@@ -1753,6 +1877,15 @@ const GBIF_PARENT_NAME_FIELD = {
   phylum: 'kingdom', subphylum: 'phylum',
 };
 
+// Unlike the two maps above (which point a rank at its PARENT's field), this points a
+// rank straight at its OWN key field in a GBIF species/match response — used by the
+// taxonomic tree panel to find each ancestor's own GBIF backbone id, for corroborating
+// P846 on a newly created item. Only the 6 ranks GBIF's REST match actually reports.
+const GBIF_RANK_KEY_FIELD = {
+  kingdom: 'kingdomKey', phylum: 'phylumKey', class: 'classKey',
+  order: 'orderKey', family: 'familyKey', genus: 'genusKey',
+};
+
 // NCBI Taxonomy's esearch, scoped to the "scientific name" field so an ambiguous common
 // name never silently matches the wrong lineage; only returns an id on an unambiguous hit.
 async function fetchNcbiTaxonId(name) {
@@ -2734,6 +2867,18 @@ async function renderTaxonDetail(t) {
     const panel = synonymyPanel(t, synInfo);
     if (panel) panels.push(panel);
   } catch (e) { /* informational only */ }
+
+  // Taxonomic tree — same "attempted regardless, degrades silently" treatment as
+  // synonymy/homonymy above; needs ctx (iNaturalist's ancestor chain via ensureStubContext),
+  // so nothing to show if that failed.
+  if (ctx) {
+    try {
+      const treeInfo = await buildTaxonomicTreeInfo(t, ctx);
+      if (myToken !== taxonDetailRenderToken) return;
+      const panel = taxonomicTreePanel(t, treeInfo);
+      if (panel) panels.push(panel);
+    } catch (e) { /* informational only */ }
+  }
 
   // Wikipedia: one auto-drafted stub per still-missing language, all at once. Each
   // stub's lead sentence starts with no citation ({{citation needed}}) — iNaturalist
