@@ -354,7 +354,29 @@ your own value, and click **Load observations**.
       as the likely correct one — an unrelated homonym from a different kingdom won't
       match within three hops at all. Advisory only, shown to the curator; never changes
       `t.wikidata` automatically.
-13. **Bulk GBIF cross-check (opt-in)** — a "Cross-check against GBIF" button
+13. **Taxonomic tree** — another curation-page panel (`buildTaxonomicTreeInfo()`,
+    `taxonomicTreePanel()`), the taxon's whole ancestor lineage in one table: every rank
+    iNaturalist tracks for it (`ctx.detail.ancestors`, already fetched for the ancestry
+    breadcrumb — not just the 7 coarse ranks `compareTaxonomySources` uses, so a "tribe" or
+    "subfamily" node shows up too), each row cross-checked against GBIF (at the 6 ranks
+    GBIF's own `species/match` reports — a plain "n/a" outside those) and against Wikidata
+    by exact name. Any ancestor missing a Wikidata item gets a `CREATE` draft — `P105`
+    (from its own rank)/`P225`/labels/description, `P846` when GBIF's own key for that rank
+    confirms the same name (referenced to both iNaturalist and GBIF together, via the same
+    multi-source `qsReferenceBlock()` the main taxon's own draft uses when both agree) —
+    and, critically, `P171` pointing at its real parent, whenever that parent already has an
+    item. All the missing ancestors' drafts are concatenated into one QuickStatements batch,
+    root to leaf. What it *can't* do: chain `P171` between two brand-new items in the same
+    batch. QuickStatements' `LAST` placeholder only ever refers to the just-created item as
+    a *subject*, never as a *value* another statement can point at (confirmed against
+    QuickStatements' own docs — the same constraint the synonymy panel's `P1420` batch above
+    already ran into) — so when a missing ancestor's own immediate parent is *also* missing
+    here, that one line's `P171` is left out rather than drafting syntax that can't work,
+    and the batch note says exactly how many were skipped and why, rather than leaving the
+    gap unexplained. Found live testing this: "Tracheophyta" (phylum, in the *Ajuga*
+    lineage) has no Wikidata item at all despite every rank around it existing — the exact
+    kind of gap this panel exists to surface.
+14. **Bulk GBIF cross-check (opt-in)** — a "Cross-check against GBIF" button
     (`resolveGbifCrossCheck()`) that batches items 12's two checks across every currently
     loaded taxon at once — VALUES lists instead of one request per taxon, the same way the
     rest of the pipeline batches Wikidata — rather than the one-taxon-at-a-time queries
