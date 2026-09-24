@@ -323,7 +323,19 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     taxon's row (a stray "Rhododendron ponticum" synonym-duplicate panel under "Anser anser
     domesticus"). Table rows don't have this problem — `renderTable()` clears the whole
     `tbody` on every call — this was the one place several rows could exist without a full
-    rebuild; fixed by clearing any leftover siblings before rendering a new taxon.
+    rebuild; fixed by clearing any leftover siblings before rendering a new taxon. A "↻
+    Refresh from Wikidata" button in the page header (`refreshTaxonFromWikidata()`)
+    re-checks just this one taxon against live WDQS — deliberately *not* the QLever-first
+    pattern every bulk step above uses. Requested directly: after running a QuickStatements
+    batch from this page, there's a lag before the edit actually lands on Wikidata, and
+    once it has, the bulk pipeline's own "trust QLever, only re-check a miss against WDQS"
+    strategy would still show the old state — an item QLever already "found" (just under
+    stale data, e.g. missing the `P3151` just added) never counts as a miss, so it would
+    never get re-checked. This button skips that entirely and goes straight to live WDQS
+    for the one taxon being looked at, then clears its memoized ancestor/GBIF/NCBI context
+    too and re-renders the whole page — so a curator can create an item, wait for it to
+    land, refresh, and immediately see (and act on) whatever the *next* gap is, without
+    reloading the whole project/user and losing their place in it.
 12. **Synonymy & homonymy** — a panel on the curation page (`buildSynonymyInfo()`,
     `synonymyPanel()`), on-demand and per-taxon only; the lookups below don't scale to a
     batch of hundreds the way the rest of the pipeline does. RDF end to end, same
