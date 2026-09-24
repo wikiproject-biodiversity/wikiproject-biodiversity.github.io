@@ -64,6 +64,7 @@
   <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
   <div class="stat warn" id="statSynonymDuplicateCard" hidden><span id="statSynonymDuplicate">0</span><label>multiple WP via synonymy</label></div>
   <div class="stat danger" id="statWikidataMismatchCard" hidden><span id="statWikidataMismatch">0</span><label>WD classification vs GBIF</label></div>
+  <div class="stat warn" id="statStubArticleCard" hidden><span id="statStubArticle">0</span><label>stub-sized article</label></div>
 </section>
 
 <section id="filters" class="filters" hidden>
@@ -75,6 +76,7 @@
   <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
   <button class="filter-btn" data-filter="synonym-duplicate" id="synonymFilterBtn" hidden>Multiple WP (synonymy)</button>
   <button class="filter-btn" data-filter="wikidata-gbif-mismatch" id="wikidataMismatchFilterBtn" hidden>WD needs curation (vs GBIF)</button>
+  <button class="filter-btn" data-filter="stub-article" id="stubArticleFilterBtn" hidden>Stub-sized article</button>
 </section>
 
 <section id="synonymyCheckSection" class="identity-panel" hidden>
@@ -85,6 +87,19 @@
     to find cases where the same organism has separate Wikipedia articles under different names; and its
     classification, to flag a Wikidata item whose parent taxon is missing or disagrees with GBIF's. Not part of
     the automatic pipeline since it adds real time on a large project, so it's opt-in.</p>
+</section>
+
+<section id="articleQualitySection" class="identity-panel" hidden>
+  <div class="identity-row">
+    <button id="checkArticleQualityBtn" class="small-btn upload-btn">Check article quality (size)</button>
+  </div>
+  <p class="identity-note">For every language a taxon already has an article in, fetches that article's current
+    size in bytes directly from Wikipedia's own API and flags it "stub-sized" below a rough threshold — useful
+    for an editathon organiser who wants existing-but-thin articles to improve, not just missing ones. Size alone
+    is a coarse proxy for quality (a short well-cited article and a long unreferenced one both slip past it
+    either way), not a substitute for actually opening the article — but it needs no extra source to check.
+    Not part of the automatic pipeline (one API call per language per taxon that already has an article), so
+    it's opt-in.</p>
 </section>
 
 <section id="bulkActions" class="identity-panel" hidden>
