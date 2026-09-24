@@ -503,6 +503,66 @@ async function resolveSitelinks(taxa) {
   return taxa;
 }
 
+// Re-resolves ONE taxon's Wikidata state — deliberately against live WDQS only, skipping
+// QLever entirely, unlike every bulk step above. QLever's dump is periodically refreshed
+// (observed ~6 weeks stale) and re-checked on a MISS only, which is exactly wrong here: a
+// curator who just ran a QuickStatements batch from this page — adding a P3151 to an
+// already-matched item, say — has an item QLever already "found", just under stale data,
+// so the bulk pipeline's own miss-only re-check would never trigger. Requested directly:
+// "once the quickstatements is finished there is a lag ... so there can be subsequent
+// edits" — this is the button for exactly that, one taxon, straight to the live source.
+// Also clears the memoized per-taxon context (ancestor chain, GBIF/NCBI classification,
+// synonym lookups) so the next view re-fetches that too, not just the Wikidata match.
+async function refreshTaxonFromWikidata(t) {
+  const wdRows = await sparqlViaComunica(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
+  VALUES ?taxonLabel { ${sparqlStringLiteral(t.name)} }
+  ?wdTaxon wdt:P225 ?taxonLabel .
+  OPTIONAL { ?wdTaxon wdt:P846 ?gbif }
+  OPTIONAL { ?wdTaxon wdt:P3151 ?inat }
+  OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
+}`,
+    WDQS_ENDPOINT, { silent: true, retries: 1, label: `Live Wikidata refresh for "${t.name}"` }
+  );
+  const byName = new Map();
+  for (const r of wdRows) pushWikidataCandidate(byName, r);
+  const candidates = byName.get(t.name) || [];
+  const distinctQids = [...new Set(candidates.map(c => c.qid))];
+  let chosen = null, ambiguous = false, inatIdConflict = null;
+  if (distinctQids.length === 1) {
+    chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
+    const distinctInatValues = [...new Set(candidates.map(c => c.inat).filter(Boolean))];
+    if (distinctInatValues.length > 1) inatIdConflict = distinctInatValues;
+  } else if (distinctQids.length > 1) {
+    chosen = candidates.find(c => c.inat === String(t.inatId)) || candidates[0];
+    ambiguous = true;
+  }
+  t.wikidata = chosen;
+  t.wikidataAmbiguous = ambiguous;
+  t.wikidataCandidateCount = distinctQids.length;
+  t.wikidataCandidateQids = distinctQids;
+  t.wikidataInatIdConflict = inatIdConflict;
+
+  if (t.wikidata) {
+    const optionals = LANGS.map(l => `OPTIONAL { ?article_${l.code} schema:about ?wdTaxon ; schema:isPartOf <${l.wiki}> . }`).join('\n  ');
+    const selectVars = LANGS.map(l => `?article_${l.code}`).join(' ');
+    const siteRows = await sparqlViaComunica(
+      sitelinkQuery(`wd:${t.wikidata.qid}`, selectVars, optionals),
+      WDQS_ENDPOINT, { silent: true, retries: 1, label: `Live sitelinks refresh for ${t.wikidata.qid}` }
+    );
+    const langs = {};
+    for (const l of LANGS) langs[l.code] = (siteRows[0] && siteRows[0][`article_${l.code}`]) || null;
+    t.wikipedia = langs;
+  } else {
+    t.wikipedia = Object.fromEntries(LANGS.map(l => [l.code, null]));
+  }
+
+  delete t._stubContext;
+  delete t._qsContext;
+  return t;
+}
+
 // ---------- Article quality (opt-in) ----------
 // Byte size is a coarse, easily-checked proxy for "is this actually developed, or just a
 // name with a stub attached" — not a substitute for opening the article (a short
@@ -3038,7 +3098,9 @@ async function renderTaxonDetail(t) {
     <div>
       <h2><span class="taxon-name">${t.name}</span>${t.commonName ? ` <span class="taxon-common-inline">${t.commonName}</span>` : ''}</h2>
       ${ancestry ? `<p class="taxon-detail-ancestry">${ancestry}</p>` : ''}
-      <p><a href="${inatTaxonUrl(t)}" target="_blank" rel="noopener">${t.rank || 'taxon'} on iNaturalist</a> — ${t.obsCount} observation${t.obsCount === 1 ? '' : 's'} in this run</p>
+      <p><a href="${inatTaxonUrl(t)}" target="_blank" rel="noopener">${t.rank || 'taxon'} on iNaturalist</a> — ${t.obsCount} observation${t.obsCount === 1 ? '' : 's'} in this run
+        <button class="small-btn refresh-wikidata-btn" data-inat-id="${t.inatId}" title="Re-checks this taxon against live Wikidata (not the QLever mirror, which can be weeks behind) — use after running a QuickStatements batch, once the edit has actually landed on Wikidata, to see it reflected here and propose whatever comes next">↻ Refresh from Wikidata</button>
+      </p>
     </div>
   `;
 
@@ -3407,6 +3469,24 @@ function syncViewFromHash() {
 
 window.addEventListener('hashchange', syncViewFromHash);
 taxonDetailBackBtn.addEventListener('click', () => { location.hash = ''; });
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.refresh-wikidata-btn');
+  if (!btn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(btn.dataset.inatId));
+  if (!t) return;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    await refreshTaxonFromWikidata(t);
+    await renderTaxonDetail(t); // rebuilds the whole page (including this button) from the fresh state
+  } catch (e2) {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    log(`Wikidata refresh for "${t.name}" failed: ${e2.message}`, 'err');
+  }
+});
 
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('.bhl-btn');
