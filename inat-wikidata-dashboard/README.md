@@ -480,6 +480,32 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       wrong genus. Both now prefer whichever row is itself the accepted usage
       (`taxonomicStatus`/absence of `acceptedNameUsage`) when a name matches more than one
       GBIF record, verified against these exact rows.
+15. **Article quality check (opt-in)** — a "Check article quality" button
+    (`resolveArticleQuality()`), requested by an editathon organiser who wanted to send
+    volunteers at existing-but-thin articles too, not just missing ones. For every taxon
+    that already has a confirmed article in one of the 4 tracked languages, fetches that
+    article's current size in bytes straight from Wikipedia's own API
+    (`en.wikipedia.org/w/api.php?action=query&prop=info`, batched up to 50 titles per
+    request — the limit for an anonymous caller — with `origin=*`, Wikipedia's own
+    documented anonymous-CORS opt-in, since this runs entirely client-side with no backend
+    to proxy through) and flags it "stub-sized" under a rough, deliberately approximate
+    1,500-byte threshold (`STUB_BYTE_THRESHOLD`) — not tied to any specific wiki's own
+    stub-template/category conventions, which vary by language, and no substitute for
+    actually opening the article (a short well-cited article and a long unreferenced one
+    both slip past a byte count either way). The ✓ badge for an existing article grows a
+    size (`✓ 1.4 kB`) and a ⚠ once checked, with its own stat card and "Stub-sized article"
+    filter, same "hidden until the opt-in check has actually run" treatment as the GBIF
+    cross-check's own stats. One real bug found building this: MediaWiki normalizes every
+    title it's queried with (underscores → spaces, first-letter case) before echoing it
+    back — querying "Dryandra_moth" (the literal path segment straight out of the article's
+    own URL, which is how Wikipedia URLs actually encode multi-word titles) returns a page
+    titled "Dryandra moth", so keying results by the returned title alone silently missed
+    every multi-word article, which is most of them. Fixed by reading the API's own
+    `query.normalized` (original → normalized) mapping and reversing it, so a result is
+    always keyed by the exact string that was actually requested — verified live against
+    that exact title. Not part of the automatic pipeline (one API call per language per
+    taxon that already has an article), so it's opt-in, same reasoning as the GBIF
+    cross-check.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
