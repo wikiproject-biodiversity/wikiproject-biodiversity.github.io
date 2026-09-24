@@ -20,11 +20,12 @@ imports and the SPARQL fetches to behave):
 python3 -m http.server 8734
 ```
 
-Then open <http://localhost:8734/>, pick **Project**, **User**, or **OSM area** as the scope,
-type into the scope field (autocomplete searches the actual source as you type — iNaturalist's
-project/user search for those two scopes, [Nominatim](https://nominatim.openstreetmap.org) for
-OSM area — so you don't need to already know a slug/login/OSM id), pick a suggestion or leave
-your own value, and click **Load observations**.
+Then open <http://localhost:8734/>, pick **Project**, **User**, **OSM area**, or **Taxon** as
+the scope, type into the scope field (autocomplete searches the actual source as you type —
+iNaturalist's own project/user/taxon search for those three scopes,
+[Nominatim](https://nominatim.openstreetmap.org) for OSM area — so you don't need to already
+know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, and click
+**Load observations**.
 
 ## How it works
 
@@ -40,10 +41,19 @@ your own value, and click **Load observations**.
    the [Overpass API](https://overpass-api.de/api/interpreter) — a way or relation resolves to
    its bounding box (`out bb;`) and is searched with iNaturalist's
    `swlat`/`swlng`/`nelat`/`nelng` params; a node has no area of its own, so it's searched with
-   `lat`/`lng`/`radius` instead, using the radius (km) entered alongside the reference. From
-   here on the pipeline is identical regardless of scope — this is the first step towards
-   letting a wikiblitz organiser scope the whole dashboard to a real-world area (a park, a
-   town, a bioblitz perimeter) rather than only an iNaturalist project or user.
+   `lat`/`lng`/`radius` instead, using the radius (km) entered alongside the reference. For
+   **Taxon**, the entered name or numeric ID resolves (`resolveTaxonReference()` — a bare
+   number used directly, anything else resolved via the same live `taxa/autocomplete` search
+   the scope field's own autocomplete uses, same "typed and submitted without picking a
+   suggestion" fallback as OSM area above) to iNaturalist's own `taxon_id=` param — requesting
+   a genus (or any higher rank) already returns observations of every descendant species with
+   it, no extra work needed to pull in the whole genus/family/etc at once (e.g. the genus
+   [*Izatha*](https://www.inaturalist.org/taxa/376735-Izatha), 36 species, one taxon ID).
+   Added for curators who want to work through a specific group of species — a genus, a
+   family — rather than only a project, a user, or a place. From here on the pipeline is
+   identical regardless of scope — this is the first step towards letting a wikiblitz
+   organiser scope the whole dashboard to a real-world area (a park, a town, a bioblitz
+   perimeter) or a taxonomic group, rather than only an iNaturalist project or user.
 2. **Comunica → [QLever](https://qlever.cs.uni-freiburg.de/wikidata)'s Wikidata
    mirror, live WDQS as a fallback** — resolves each scientific name to a Wikidata item
    (`wdt:P225`) and reads off cross-reference identifiers already stored there: GBIF
