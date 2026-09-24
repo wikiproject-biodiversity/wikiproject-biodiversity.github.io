@@ -241,11 +241,26 @@ async function fetchOsmBoundingBox(ref) {
 
 // ---------- iNaturalist ----------
 
-// scopeType: 'project' (iNaturalist project slug/id), 'user' (iNaturalist login/id), or
+// Accepts either a bare numeric iNaturalist taxon id, or a name resolved via the same live
+// taxa/autocomplete search the scope field's own autocomplete already uses — same
+// "resolve whatever was actually typed, not just what was clicked" fallback as
+// resolveOsmReference above, for exactly the same reason: submitting straight from the
+// text field shouldn't require having picked a suggestion first.
+async function resolveTaxonReference(value) {
+  const trimmed = (value || '').trim();
+  if (/^\d+$/.test(trimmed)) return trimmed;
+  const matches = await searchTaxaForAutocomplete(trimmed);
+  if (!matches.length) throw new Error(`No iNaturalist taxon found for "${value}".`);
+  return matches[0].value;
+}
+
+// scopeType: 'project' (iNaturalist project slug/id), 'user' (iNaturalist login/id),
 // 'osm' (a node/way/relation ID resolved geographically via Overpass, searched against
 // iNaturalist's own bounding-box/radius params — verified live to return correctly-bounded
-// results). Project/user accept either a slug/login string or a numeric id interchangeably
-// via the same REST param shape (project_id= / user_id=).
+// results), or 'taxon' (a taxon name or id — e.g. a genus — searched via iNaturalist's own
+// `taxon_id=` param, which already includes every descendant taxon, no extra work needed
+// to pull in the whole genus/family/etc). Project/user accept either a slug/login string
+// or a numeric id interchangeably via the same REST param shape (project_id= / user_id=).
 async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
   let queryParams;
   let noun;
@@ -256,6 +271,10 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
     queryParams = bounds.kind === 'point'
       ? `lat=${bounds.lat}&lng=${bounds.lng}&radius=${osmRadiusKm || 10}`
       : `swlat=${bounds.swlat}&swlng=${bounds.swlng}&nelat=${bounds.nelat}&nelng=${bounds.nelng}`;
+  } else if (scopeType === 'taxon') {
+    noun = 'taxon';
+    const taxonId = await resolveTaxonReference(scopeValue);
+    queryParams = `taxon_id=${taxonId}`;
   } else {
     const param = scopeType === 'user' ? 'user_id' : 'project_id';
     noun = scopeType === 'user' ? 'user' : 'project';
@@ -268,7 +287,7 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
   while (observations.length < MAX_OBSERVATIONS) {
     const url = `${INAT_API}/observations?${queryParams}&per_page=${perPage}&page=${page}&order_by=id`;
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : scopeType === 'osm' ? 'reference' : 'slug/id'}?)`);
+    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : scopeType === 'osm' ? 'reference' : scopeType === 'taxon' ? 'name/id' : 'slug/id'}?)`);
     const json = await res.json();
     if (page === 1 && json.total_results === 0) {
       throw new Error(`No observations found for ${noun} "${scopeValue}".`);
@@ -2436,6 +2455,7 @@ const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
   user: { label: 'iNaturalist username or numeric ID', example: 'andrawaag' },
   osm: { label: 'OSM node/way/relation ID or URL', example: 'relation/47015' },
+  taxon: { label: 'iNaturalist taxon name or numeric ID', example: 'Izatha' },
 };
 scopeTypeSelect.addEventListener('change', () => {
   const cfg = SCOPE_PLACEHOLDERS[scopeTypeSelect.value];
@@ -2487,10 +2507,23 @@ async function searchOsmForAutocomplete(q, signal) {
     }));
 }
 
+async function searchTaxaForAutocomplete(q, signal) {
+  const url = `${INAT_API}/taxa/autocomplete?q=${encodeURIComponent(q)}&per_page=8`;
+  const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`iNaturalist taxa search HTTP ${res.status}`);
+  const json = await res.json();
+  return (json.results || []).map(r => ({
+    label: r.name,
+    sub: [r.rank, r.preferred_common_name].filter(Boolean).join(' · '),
+    value: String(r.id),
+  }));
+}
+
 const SCOPE_AUTOCOMPLETE_SEARCH = {
   project: searchProjectsForAutocomplete,
   user: searchUsersForAutocomplete,
   osm: searchOsmForAutocomplete,
+  taxon: searchTaxaForAutocomplete,
 };
 
 const scopeAutocompleteEl = document.getElementById('scopeAutocomplete');
@@ -4104,11 +4137,11 @@ function updateBulkInatIdAction(count) {
 }
 
 async function run() {
-  const scopeType = scopeTypeSelect.value; // 'project', 'user', or 'osm'
+  const scopeType = scopeTypeSelect.value; // 'project', 'user', 'osm', or 'taxon'
   const scopeValue = projectInput.value.trim();
   if (!scopeValue) return;
   const osmRadiusKm = Number(osmRadiusInput.value) || 10;
-  const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : 'project';
+  const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : scopeType === 'taxon' ? 'taxon' : 'project';
   runBtn.disabled = true;
   statusSpinnerEl.hidden = false;
   statusHeaderTextEl.textContent = '';
@@ -4132,8 +4165,9 @@ async function run() {
 
   // Independent of the taxa pipeline below (it's about the scope itself, not the
   // species observed in it), so it runs concurrently rather than blocking on it.
-  // Doesn't apply to an OSM area — there's no iNaturalist project/user record to link.
-  if (scopeType !== 'osm') checkIdentityLinking(scopeType, scopeValue);
+  // Doesn't apply to an OSM area or a taxon — neither is an iNaturalist project/user
+  // record to link.
+  if (scopeType !== 'osm' && scopeType !== 'taxon') checkIdentityLinking(scopeType, scopeValue);
 
   // A step count the user can see progress against, however imprecise any single step's
   // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
