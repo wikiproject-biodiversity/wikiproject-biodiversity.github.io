@@ -32,6 +32,7 @@
       <option value="project">Project</option>
       <option value="user">User</option>
       <option value="osm">OSM area</option>
+      <option value="taxon">Taxon</option>
     </select>
   </label>
   <label class="autocomplete-field">
@@ -151,16 +152,21 @@
           iNaturalist's <code>swlat</code>/<code>swlng</code>/<code>nelat</code>/<code>nelng</code>
           params; a node has no area of its own, so it's searched with
           <code>lat</code>/<code>lng</code>/<code>radius</code> instead, using the radius (km)
-          entered alongside the reference. Everything downstream of this step is identical no
-          matter which scope was used — this is the first step towards scoping the whole
-          dashboard to a real-world area (a park, a town, a bioblitz perimeter) rather than only
-          an iNaturalist project or user. The scope field itself autocompletes against the real
-          source as you type (debounced, 2+ characters): iNaturalist's own
-          <code>/projects</code>/<code>/users/autocomplete</code> search for
-          <strong>Project</strong>/<strong>User</strong>, and
+          entered alongside the reference. For <strong>Taxon</strong>, the entered name or
+          numeric ID resolves to iNaturalist's own <code>taxon_id=</code> param — a genus (or
+          any higher rank) automatically includes every observation of every species beneath
+          it, no extra work needed, so picking e.g.
+          <a href="https://www.inaturalist.org/taxa/376735-Izatha" target="_blank" rel="noopener"><em>Izatha</em></a>
+          pulls in observations of every species in that genus at once. Everything downstream
+          of this step is identical no matter which scope was used — this is the first step
+          towards scoping the whole dashboard to a real-world area (a park, a town, a bioblitz
+          perimeter) rather than only an iNaturalist project or user. The scope field itself
+          autocompletes against the real source as you type (debounced, 2+ characters):
+          iNaturalist's own <code>/projects</code>/<code>/users/autocomplete</code>/<code>/taxa/autocomplete</code>
+          search for <strong>Project</strong>/<strong>User</strong>/<strong>Taxon</strong>, and
           <a href="https://nominatim.openstreetmap.org" target="_blank" rel="noopener">Nominatim</a>
-          for <strong>OSM area</strong> — so a suggestion's machine-readable value (slug, login, or
-          <code>type/id</code>) lands in the field with no need to already know it.
+          for <strong>OSM area</strong> — so a suggestion's machine-readable value (slug, login,
+          <code>type/id</code>, or taxon ID) lands in the field with no need to already know it.
         </li>
         <li>
           <strong>Comunica → QLever's Wikidata mirror, live WDQS as a fallback</strong> — a fast
