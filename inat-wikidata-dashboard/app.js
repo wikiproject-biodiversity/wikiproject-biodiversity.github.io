@@ -503,6 +503,75 @@ async function resolveSitelinks(taxa) {
   return taxa;
 }
 
+// ---------- Article quality (opt-in) ----------
+// Byte size is a coarse, easily-checked proxy for "is this actually developed, or just a
+// name with a stub attached" — not a substitute for opening the article (a short
+// well-cited article and a long unreferenced one both slip past it either way), but
+// requires no extra source, just Wikipedia's own API. Rough threshold, not tied to any
+// specific wiki's own stub-template/category conventions, which vary by language.
+const STUB_BYTE_THRESHOLD = 1500;
+
+function wikipediaTitleFromUrl(url) {
+  const path = url.split('/wiki/')[1];
+  return path ? decodeURIComponent(path) : null;
+}
+
+// One language, one batch (MediaWiki's `titles=` caps at 50 for anonymous requests —
+// callers chunk before calling this). `origin=*` is Wikipedia's own documented anonymous
+// CORS opt-in, needed since this runs entirely client-side with no backend to proxy through.
+async function fetchArticleLengths(code, titles) {
+  const map = new Map();
+  if (!titles.length) return map;
+  const wiki = LANGS.find(l => l.code === code).wiki.replace(/\/$/, '');
+  const url = `${wiki}/w/api.php?action=query&format=json&formatversion=2&prop=info&titles=${encodeURIComponent(titles.join('|'))}&origin=*`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`${code}.wikipedia.org API HTTP ${res.status}`);
+  const json = await res.json();
+  // MediaWiki normalizes each requested title (underscores → spaces, first-letter case)
+  // before echoing it back as `page.title` — found live: querying "Dryandra_moth" (the
+  // literal path segment out of the article's own URL, underscores and all) returns a page
+  // titled "Dryandra moth", so keying the map by `page.title` alone silently missed every
+  // multi-word title, which is most of them. `query.normalized` maps original → normalized;
+  // reversed here so results are keyed by the exact string each caller passed in.
+  const toOriginal = new Map();
+  for (const n of (json.query && json.query.normalized) || []) toOriginal.set(n.to, n.from);
+  for (const p of (json.query && json.query.pages) || []) {
+    if (p.title == null || p.length == null) continue;
+    map.set(toOriginal.get(p.title) || p.title, p.length);
+  }
+  return map;
+}
+
+// Only ever checks taxa that already have a confirmed article (t.wikipedia[code] set) —
+// nothing to size for one that doesn't exist. Populates t.articleLength[code] = bytes and
+// t.hasStubArticle = true if any language's article is under the threshold.
+async function resolveArticleQuality(taxa) {
+  for (const lang of LANGS) {
+    const withArticle = taxa
+      .map(t => {
+        const url = t.wikipedia && t.wikipedia[lang.code];
+        const title = url ? wikipediaTitleFromUrl(url) : null;
+        return title ? { t, title } : null;
+      })
+      .filter(Boolean);
+    if (!withArticle.length) continue;
+    await runBatchedStep(withArticle, `Article size (${lang.code})`, async (batch) => {
+      const lengths = await fetchArticleLengths(lang.code, batch.map(x => x.title));
+      for (const { t, title } of batch) {
+        const bytes = lengths.get(title);
+        if (bytes == null) continue;
+        t.articleLength = t.articleLength || {};
+        t.articleLength[lang.code] = bytes;
+      }
+      return lengths.size;
+    }, 50);
+  }
+  for (const t of taxa) {
+    t.hasStubArticle = !!(t.articleLength && Object.values(t.articleLength).some(b => b < STUB_BYTE_THRESHOLD));
+  }
+  return taxa;
+}
+
 // ---------- Plazi TreatmentBank ----------
 
 // Batch step: how many published treatments exist per species. Only taxa whose
@@ -2449,7 +2518,12 @@ const synonymFilterBtn = document.getElementById('synonymFilterBtn');
 const wikidataMismatchFilterBtn = document.getElementById('wikidataMismatchFilterBtn');
 const statSynonymDuplicateCard = document.getElementById('statSynonymDuplicateCard');
 const statWikidataMismatchCard = document.getElementById('statWikidataMismatchCard');
+const articleQualitySectionEl = document.getElementById('articleQualitySection');
+const checkArticleQualityBtn = document.getElementById('checkArticleQualityBtn');
+const stubArticleFilterBtn = document.getElementById('stubArticleFilterBtn');
+const statStubArticleCard = document.getElementById('statStubArticleCard');
 let gbifCrossCheckDone = false;
+let articleQualityChecked = false;
 
 const SCOPE_PLACEHOLDERS = {
   project: { label: 'iNaturalist project slug or numeric ID', example: 'biohackathon-2026' },
@@ -2760,6 +2834,7 @@ function matchesFilter(t) {
   if (currentFilter === 'inat-id-conflict') return !!t.wikidataInatIdConflict;
   if (currentFilter === 'synonym-duplicate') return !!t.hasSynonymDuplication;
   if (currentFilter === 'wikidata-gbif-mismatch') return !!t.wikidataGbifMismatch;
+  if (currentFilter === 'stub-article') return !!t.hasStubArticle;
   const missing = taxonMissingCount(t);
   if (missing === null) return false;
   if (currentFilter === 'missing-any') return missing > 0;
@@ -2774,7 +2849,16 @@ function inatTaxonUrl(t) {
 function langBadge(t, code) {
   if (!t.wikidata) return '<span class="pill">—</span>';
   const url = t.wikipedia ? t.wikipedia[code] : null;
-  if (url) return `<a class="badge yes" href="${url}" target="_blank" rel="noopener" title="Has ${code} Wikipedia article">✓</a>`;
+  if (url) {
+    const bytes = t.articleLength ? t.articleLength[code] : null;
+    if (bytes == null) return `<a class="badge yes" href="${url}" target="_blank" rel="noopener" title="Has ${code} Wikipedia article">✓</a>`;
+    const isStub = bytes < STUB_BYTE_THRESHOLD;
+    // Explicit 'en-US' locale for the thousands separator, not the browser's own — this
+    // text is authored in English regardless of which of the 4 tracked Wikipedias it's
+    // about, and a system locale that uses "." as the thousands separator (common outside
+    // the US) would make "4.875 bytes" misread as a decimal, not four thousand-ish bytes.
+    return `<a class="badge yes${isStub ? ' stub-sized' : ''}" href="${url}" target="_blank" rel="noopener" title="Has ${code} Wikipedia article — ${bytes.toLocaleString('en-US')} bytes${isStub ? `, under the ${STUB_BYTE_THRESHOLD.toLocaleString('en-US')}-byte stub threshold` : ''}">✓ ${bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1)} kB`}${isStub ? ' ⚠' : ''}</a>`;
+  }
   if (inatWikipediaLangMatch(t, code)) {
     return `<a class="badge maybe" href="${t.inatWikipediaUrl}" target="_blank" rel="noopener" title="iNaturalist links to this page for ${code}, but it's not confirmed via Wikidata — the article may be modelled under a different Wikidata item (no exact P225 match). Check before drafting a new stub.">?</a>`;
   }
@@ -2927,6 +3011,7 @@ async function renderTaxonDetail(t) {
   bulkActionsEl.hidden = true;
   tableWrapEl.hidden = true;
   synonymyCheckSectionEl.hidden = true;
+  articleQualitySectionEl.hidden = true;
   taxonDetailEl.hidden = false;
 
   // Every badge on this row (gbifmismatch/inatconflict/qs/inatlink/plazi/synonymdup/…)
@@ -3307,6 +3392,7 @@ function showTableView() {
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
     synonymyCheckSectionEl.hidden = false;
+    articleQualitySectionEl.hidden = false;
     updateStats(); // re-derives the bulk-action button's visibility too
   }
 }
@@ -4116,6 +4202,14 @@ function updateStats() {
     synonymFilterBtn.hidden = false;
     wikidataMismatchFilterBtn.hidden = false;
   }
+
+  // Same pattern, for the separate opt-in article-quality check.
+  if (articleQualityChecked) {
+    const stubCount = currentTaxa.filter(t => t.hasStubArticle).length;
+    document.getElementById('statStubArticle').textContent = stubCount;
+    statStubArticleCard.hidden = false;
+    stubArticleFilterBtn.hidden = false;
+  }
 }
 
 // Collects every taxon still missing its iNaturalist id link into one QuickStatements
@@ -4159,6 +4253,10 @@ async function run() {
   synonymFilterBtn.hidden = true;
   wikidataMismatchFilterBtn.hidden = true;
   gbifCrossCheckDone = false;
+  articleQualitySectionEl.hidden = true;
+  statStubArticleCard.hidden = true;
+  stubArticleFilterBtn.hidden = true;
+  articleQualityChecked = false;
   identityState = null;
   currentTaxa = [];
   if (location.hash) location.hash = ''; // a fresh search always starts on the table, not a stale taxon page
@@ -4200,6 +4298,7 @@ async function run() {
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
     synonymyCheckSectionEl.hidden = false;
+    articleQualitySectionEl.hidden = false;
     currentFilter = 'all';
     [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
     renderTable();
@@ -4232,6 +4331,29 @@ checkSynonymyBtn.addEventListener('click', async () => {
     setStatusHeader(`Done — ${currentTaxa.length} taxa loaded.`);
     checkSynonymyBtn.disabled = false;
     checkSynonymyBtn.textContent = originalText;
+    statusSpinnerEl.hidden = true;
+  }
+});
+
+checkArticleQualityBtn.addEventListener('click', async () => {
+  checkArticleQualityBtn.disabled = true;
+  const originalText = checkArticleQualityBtn.textContent;
+  checkArticleQualityBtn.textContent = 'Checking…';
+  statusSpinnerEl.hidden = false;
+  setStatusHeader('Checking article quality (size)…');
+  try {
+    await resolveArticleQuality(currentTaxa);
+    articleQualityChecked = true;
+    updateStats();
+    renderTable();
+    const stubCount = currentTaxa.filter(t => t.hasStubArticle).length;
+    log(`Article quality check — ${stubCount} taxa with a stub-sized article in at least one language.`);
+  } catch (e) {
+    log(`Article quality check failed: ${e.message}`, 'err');
+  } finally {
+    setStatusHeader(`Done — ${currentTaxa.length} taxa loaded.`);
+    checkArticleQualityBtn.disabled = false;
+    checkArticleQualityBtn.textContent = originalText;
     statusSpinnerEl.hidden = true;
   }
 });
