@@ -433,13 +433,18 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     gap unexplained. Found live testing this: "Tracheophyta" (phylum, in the *Ajuga*
     lineage) has no Wikidata item at all despite every rank around it existing — the exact
     kind of gap this panel exists to surface.
-14. **Bulk GBIF cross-check (opt-in)** — a "Cross-check against GBIF" button
-    (`resolveGbifCrossCheck()`) that batches items 12's two checks across every currently
-    loaded taxon at once — VALUES lists instead of one request per taxon, the same way the
-    rest of the pipeline batches Wikidata — rather than the one-taxon-at-a-time queries
-    the curation page's own panel runs. Deliberately not automatic: even batched, it's
-    real added time on a large project, so it's its own button rather than folded into the
-    main run.
+14. **Bulk GBIF cross-check** — Step 6 of the main run (`resolveGbifCrossCheck()`), batching
+    items 12's two checks across every currently loaded taxon at once — VALUES lists
+    instead of one request per taxon, the same way the rest of the pipeline batches
+    Wikidata — rather than the one-taxon-at-a-time queries the curation page's own panel
+    runs. Used to be its own opt-in "Cross-check against GBIF" button, deliberately kept
+    out of the automatic pipeline since even batched it's real added time on a large
+    project; in practice it was clicked every single time, so the opt-in step was just
+    friction, not a real choice — folded into the main run instead. Its own failure is
+    caught separately from the rest of the run (`run()`'s try block wraps it on its own),
+    so GBIF being unavailable logs a warning and degrades gracefully rather than sinking
+    an otherwise-successful load — the same treatment already given to QLever/WDQS
+    flakiness elsewhere in this pipeline.
     - **Multiple Wikipedia pages via synonymy** (`hasSynonymDuplication`, "Multiple WP
       (synonymy)" filter) — flags a taxon when more than one name for the same organism
       (its own, or a GBIF synonym) has its own separate Wikipedia article; a real
@@ -574,8 +579,8 @@ per step) doesn't turn it into an unscrollable wall of near-identical text.
   tool successfully handling a slow/rate-limited public endpoint, not something broken.
   Red (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
   upfront "the whole run will take N minutes" estimate would just be a guess dressed up
-  as a number. Instead the status header shows which of the 5 pipeline steps is current
-  (`Step 3/5: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
+  as a number. Instead the status header shows which of the 6 pipeline steps is current
+  (`Step 3/6: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
   remaining)` extrapolated from that step's own pace so far (`runBatchedStep`) — it
   self-corrects as the step runs rather than committing to a number before the step's
   actual speed (QLever-fast or WDQS-slow) is even known.
