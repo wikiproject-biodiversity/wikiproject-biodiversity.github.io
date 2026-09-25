@@ -79,16 +79,6 @@
   <button class="filter-btn" data-filter="stub-article" id="stubArticleFilterBtn" hidden>Stub-sized article</button>
 </section>
 
-<section id="synonymyCheckSection" class="identity-panel" hidden>
-  <div class="identity-row">
-    <button id="checkSynonymyBtn" class="small-btn upload-btn">Cross-check against GBIF (synonymy + classification)</button>
-  </div>
-  <p class="identity-note">Cross-checks each taxon against GBIF (via QLever, not the REST API): its synonyms,
-    to find cases where the same organism has separate Wikipedia articles under different names; and its
-    classification, to flag a Wikidata item whose parent taxon is missing or disagrees with GBIF's. Not part of
-    the automatic pipeline since it adds real time on a large project, so it's opt-in.</p>
-</section>
-
 <section id="articleQualitySection" class="identity-panel" hidden>
   <div class="identity-row">
     <button id="checkArticleQualityBtn" class="small-btn upload-btn">Check article quality (size)</button>
@@ -366,23 +356,21 @@
           never applied automatically.
         </li>
         <li>
-          <strong>Bulk GBIF cross-check (opt-in)</strong> — a "Cross-check against GBIF" button that
-          runs the same two checks above, batched across every currently loaded taxon at once (VALUES
-          lists, not one request per taxon), revealing two more filters once it's done. Not automatic —
-          real added time on a large project even batched, so it's its own button rather than part of
-          the main run. <strong>"Multiple WP (synonymy)"</strong> flags a taxon whose organism has more
-          than one Wikipedia article across its name and its GBIF synonyms — worth checking whether
-          they should be merged. <strong>"WD needs curation (vs GBIF)"</strong> flags a Wikidata item
-          whose parent taxon is missing or disagrees with GBIF at the equivalent rank — only when
-          Wikidata's own parent is itself at one of GBIF's six modelled ranks, so a finer intermediate
-          rank Wikidata has and GBIF's flat classification doesn't (a tribe or subfamily, say) isn't
-          mistaken for a disagreement. Click the badge (it's not just a hover tooltip) to see the actual
-          comparison and, when Wikidata has no parent statement at all and GBIF's expected one resolves
-          to exactly one Wikidata item, a QuickStatements draft to add it.
-        </li>
-        <li>
-          <strong>Roadmap</strong> — OpenStreetMap (observation localities / place alignment) and a
-          richer Wikimedia Commons media panel are the next sources to wire into this dashboard.
+          <strong>Bulk GBIF cross-check</strong> — Step 6 of the main run, batched across every taxon
+          at once (VALUES lists, not one request per taxon) the same way the rest of the pipeline
+          batches Wikidata, revealing two more stat cards and filters once it's done. Used to be its
+          own opt-in "Cross-check against GBIF" button — always clicked in practice, so it's just part
+          of the run now; a failure here logs a warning and the run still completes with everything
+          else it found, rather than treating GBIF's own availability as something that can sink an
+          otherwise-successful load. <strong>"Multiple WP (synonymy)"</strong> flags a taxon whose
+          organism has more than one Wikipedia article across its name and its GBIF synonyms — worth
+          checking whether they should be merged. <strong>"WD needs curation (vs GBIF)"</strong> flags
+          a Wikidata item whose parent taxon is missing or disagrees with GBIF at the equivalent rank —
+          only when Wikidata's own parent is itself at one of GBIF's six modelled ranks, so a finer
+          intermediate rank Wikidata has and GBIF's flat classification doesn't (a tribe or subfamily,
+          say) isn't mistaken for a disagreement. Click the badge (it's not just a hover tooltip) to
+          see the actual comparison and, when Wikidata has no parent statement at all and GBIF's
+          expected one resolves to exactly one Wikidata item, a QuickStatements draft to add it.
         </li>
       </ol>
       <p class="query-toggle-hint">Query timings for the current run are logged below the status line while it runs.</p>
