@@ -3243,12 +3243,33 @@ async function renderTaxonDetail(t) {
   while (taxonDetailRowEl.nextElementSibling) taxonDetailRowEl.nextElementSibling.remove();
   taxonDetailRowEl.innerHTML = buildTaxonRowCells(t, { linkName: false });
 
+  // Everything below this point is built from data that isn't fetched yet (ctx needs a
+  // network round trip, the panels need several more after that). Without this, the
+  // header (name/photo) and every panel below it kept showing the PREVIOUS taxon —
+  // sometimes for several seconds — while the new taxon's data was still loading, which
+  // looks exactly like "navigating didn't do anything" and, worse, whatever QuickStatements
+  // draft was on screen at that moment was actually still the OLD taxon's, not the one
+  // whose name is in the URL. Same class of staleness as the sibling-row fix above; this
+  // covers the header/photo/ancestry and the actions panel underneath it too.
+  const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
+  const photoUrl = (usingObsPhoto && t.obsPhoto.originalUrl) || t.photo;
+  // No ancestry line yet — that needs ctx, fetched below — but everything else here is
+  // already known synchronously, so it's worth painting immediately rather than waiting.
+  taxonDetailHeaderEl.innerHTML = `
+    ${photoUrl ? `<img class="taxon-detail-photo" src="${photoUrl}" alt="">` : ''}
+    <div>
+      <h2><span class="taxon-name">${t.name}</span>${t.commonName ? ` <span class="taxon-common-inline">${t.commonName}</span>` : ''}</h2>
+      <p><a href="${inatTaxonUrl(t)}" target="_blank" rel="noopener">${t.rank || 'taxon'} on iNaturalist</a> — ${t.obsCount} observation${t.obsCount === 1 ? '' : 's'} in this run
+        <button class="small-btn refresh-wikidata-btn" data-inat-id="${t.inatId}" title="Re-checks this taxon against live Wikidata (not the QLever mirror, which can be weeks behind) — use after running a QuickStatements batch, once the edit has actually landed on Wikidata, to see it reflected here and propose whatever comes next">↻ Refresh from Wikidata</button>
+      </p>
+    </div>
+  `;
+  taxonDetailActionsEl.innerHTML = '<p class="identity-note">Loading…</p>';
+
   let ctx = null;
   try { ctx = await ensureStubContext(t); } catch (e) { /* header/actions degrade gracefully without it */ }
   if (myToken !== taxonDetailRenderToken) return;
   const ancestry = ctx ? RANK_ORDER.map(r => ctx.ranks[r]).filter(Boolean).join(' › ') : '';
-  const usingObsPhoto = !!(t.obsPhoto && t.obsPhoto.squareUrl);
-  const photoUrl = (usingObsPhoto && t.obsPhoto.originalUrl) || t.photo;
 
   taxonDetailHeaderEl.innerHTML = `
     ${photoUrl ? `<img class="taxon-detail-photo" src="${photoUrl}" alt="">` : ''}
