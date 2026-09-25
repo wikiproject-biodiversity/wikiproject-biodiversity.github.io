@@ -67,6 +67,15 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    make the QuickStatements feature below draft a duplicate item, only QLever's *misses*
    get a live re-check against WDQS (`resolveWikidata`'s second pass) — everything it
    already found is trusted as-is, so the common case stays fast and off WDQS entirely.
+   A taxon that's *still* unmatched after both passes gets one more check, this time by
+   `P3151` (iNaturalist taxon id) instead of by name (`resolveWikidata`'s third pass): the
+   item might well already exist and already be correctly cross-referenced, just under a
+   `P225` that doesn't literally match iNaturalist's name — a typo, found live: `Q6101631`
+   carries `P3151` for iNaturalist taxon 391107 (*Izatha balanophora*) correctly, but its
+   own `P225` reads "Izatha balanophora**s**". Skipping this would both wrongly report "not
+   found" and let the `CREATE` flow below draft a duplicate for a species that already has
+   an item — so `P3151`, the one property whose entire purpose is this exact cross-
+   reference, gets the last word before a taxon is treated as genuinely missing.
    A name match doesn't imply the two records are cross-linked, though: the matched
    item might still lack `P3151` back to this exact iNaturalist taxon (added by someone
    else, from a different source, before this tool existed). The **Wikidata** column
