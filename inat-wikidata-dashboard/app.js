@@ -695,12 +695,14 @@ LIMIT 20`;
 // nothing else) and cross-checked against the bot's own source (`functions.py`,
 // `process_treatments()`) — `treatmentstatements`/`treatment_reference` there are the
 // exact source of the schema below. The bot also creates/updates a separate taxon item
-// (P225/P105/P171/…) and links it to the treatment via P10594, and creates/updates a
-// publication item referenced by DOI — deliberately not reproduced here: this tool
-// already has its own, independently-verified taxon `CREATE` flow (`buildQuickStatements`)
-// and DOI-to-Wikidata resolution (`fetchWikidataItemByDoi`/`buildPublicationQS`), so
-// duplicating the bot's own (now-idle) versions of those would risk drifting out of sync
-// with this tool's — this only ever proposes the treatment item itself.
+// (P225/P105/P171/…) and a publication item referenced by DOI — deliberately not
+// reproduced here: this tool already has its own, independently-verified taxon `CREATE`
+// flow (`buildQuickStatements`) and DOI-to-Wikidata resolution (`fetchWikidataItemByDoi`/
+// `buildPublicationQS`), so duplicating the bot's own (now-idle) versions of those would
+// risk drifting out of sync with this tool's. This function only ever proposes the
+// treatment item itself — but once a treatment (and, separately, its publication) already
+// exists on Wikidata, `resolveTreatmentLinkage` below proposes the two relationship
+// statements (P10594 on the taxon, P921 on the publication) the bot used to add too.
 
 // Plazi's treatment URI is the bare 32-hex UUID with no dashes
 // (http://treatment.plazi.org/id/<uuid>); Wikidata's own Plazi ID property (P1992) uses
@@ -743,6 +745,94 @@ function buildTreatmentCreateQS(r) {
   lines.push(`LAST\tLen\t${qsString(title)}`);
   lines.push(`LAST\tDen\t"taxonomic treatment"`);
   return lines.join('\n');
+}
+
+async function fetchWikidataTaxonTreatmentLinks(taxonQid) {
+  const rows = await sparqlAllRowsWithFallback(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?treatment WHERE { wd:${taxonQid} wdt:P10594 ?treatment }`,
+    `P10594 check for ${taxonQid}`
+  );
+  return new Set(rows.map(r => r.treatment.split('/').pop()));
+}
+
+async function fetchWikidataItemsByDois(dois) {
+  const map = new Map();
+  if (!dois.length) return map;
+  const values = dois.map(d => sparqlStringLiteral(d.toUpperCase())).join(' ');
+  const rows = await sparqlAllRowsWithFallback(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?doi ?item WHERE { VALUES ?doi { ${values} } ?item wdt:P356 ?doi }`,
+    'Wikidata lookup by DOI (batch)'
+  );
+  for (const r of rows) {
+    if (!/\/Q\d+$/.test(r.item)) continue;
+    map.set(r.doi, r.item.split('/').pop());
+  }
+  return map;
+}
+
+async function fetchWikidataMainSubjectLinks(pubQids) {
+  const map = new Map();
+  if (!pubQids.length) return map;
+  const values = pubQids.map(q => `wd:${q}`).join(' ');
+  const rows = await sparqlAllRowsWithFallback(
+    `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?pub ?subject WHERE { VALUES ?pub { ${values} } OPTIONAL { ?pub wdt:P921 ?subject } }`,
+    'P921 check for treatment publications'
+  );
+  for (const r of rows) {
+    const pubQid = r.pub.split('/').pop();
+    if (!map.has(pubQid)) map.set(pubQid, new Set());
+    if (r.subject) map.get(pubQid).add(r.subject.split('/').pop());
+  }
+  return map;
+}
+
+// P10594 ("taxonomic treatment") on the taxon's own item, pointing AT a treatment — and
+// P921 ("main subject") on the publication's own item, pointing at the taxon — are the
+// two relationship statements treatmentbot also added alongside the treatment item itself
+// (see functions.py: the `P10594` line inside its taxon-statements block, and the P921
+// block at the very end of `process_treatments()`). Both need an item on EACH side to
+// already exist before they can be linked — the same two-phase constraint as the
+// taxonomic tree panel's own P171 linking (QuickStatements' own docs: it "cannot create
+// multiple items that are linked to each other") — so this only ever proposes the link
+// once both sides are independently resolvable: the taxon (already known — `t.wikidata`,
+// this taxon's own confirmed match) and the treatment/publication (checked live, same as
+// the treatment-existence check itself, re-run fresh every time this panel opens).
+async function resolveTreatmentLinkage(t, results, treatmentQidByUri) {
+  const taxonLinks = [];
+  const publicationLinks = [];
+  if (!t.wikidata || !t.wikidata.qid) return { taxonLinks, publicationLinks };
+  const taxonQid = t.wikidata.qid;
+
+  const existingTreatmentLinks = await fetchWikidataTaxonTreatmentLinks(taxonQid).catch(() => new Set());
+  for (const [uri, treatmentQid] of treatmentQidByUri) {
+    if (existingTreatmentLinks.has(treatmentQid)) continue;
+    const dashedId = plaziDashedId(uri);
+    taxonLinks.push({
+      uri, treatmentQid,
+      commands: `${taxonQid}\tP10594\t${treatmentQid}\tS248\t${QS_REF_TREATMENTBANK}\tS1992\t${qsString(dashedId)}`,
+    });
+  }
+
+  const dois = [...new Set(results.map(r => extractDoi(r.doi)).filter(Boolean))];
+  if (dois.length) {
+    const pubQidByDoi = await fetchWikidataItemsByDois(dois).catch(() => new Map());
+    const existingSubjectLinks = await fetchWikidataMainSubjectLinks([...new Set(pubQidByDoi.values())]).catch(() => new Map());
+    for (const [doi, pubQid] of pubQidByDoi) {
+      const subjects = existingSubjectLinks.get(pubQid) || new Set();
+      if (subjects.has(taxonQid)) continue;
+      publicationLinks.push({
+        doi, pubQid,
+        commands: `${pubQid}\tP921\t${taxonQid}\tS248\t${QS_REF_TREATMENTBANK}`,
+      });
+    }
+  }
+
+  return { taxonLinks, publicationLinks };
 }
 
 // ---------- Wikimedia Commons (license check + duplicate check) ----------
@@ -1012,11 +1102,11 @@ async function buildTaxonomicTreeInfo(t, ctx) {
   // One CREATE per missing node, root to leaf. `P171` only ever names a real, already-
   // resolved QID — never another node from this same batch: QuickStatements' `LAST`
   // placeholder only works as a CREATE's own subject, never as a value another statement
-  // (on a different entity, or even the very next CREATE) can point at (confirmed against
-  // QuickStatements' own docs). So when a node's immediate parent is ALSO missing, its
-  // `P171` is left out rather than drafting syntax that can't work — noted per-node so it
-  // isn't just silently incomplete, matching the same honesty already used for the
-  // reverse-P1420-on-a-new-item case in the synonymy panel above.
+  // (on a different entity, or even the very next CREATE) can point at — confirmed against
+  // QuickStatements' own docs, which say outright that it "cannot create multiple items
+  // that are linked to each other". So when a node's immediate parent is ALSO missing, its
+  // `P171` is left out of THIS batch rather than drafting syntax that can't work. That's
+  // not the end of it, though — see the Phase 2 check below.
   const missing = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
@@ -1038,19 +1128,64 @@ async function buildTaxonomicTreeInfo(t, ctx) {
     missing.push({ node, parent, parentResolved, commands: block.join('\n') });
   }
 
-  return { nodes, missing };
+  // Phase 2: for every node that DOES resolve to a Wikidata item (including ones that
+  // were themselves just created by an earlier Phase 1 batch, once they've propagated —
+  // this is why the "Refresh from Wikidata" button re-runs this whole panel against live
+  // WDQS rather than the possibly-weeks-stale QLever mirror) but has no P171 at all yet,
+  // propose linking it to its immediate parent's OWN resolved item. Deliberately only
+  // when P171 is completely ABSENT, never when it's present but different — adding a
+  // second, disagreeing value would create a conflict, not fix one, same standard as
+  // every other P171 proposal in this tool (see gbifMismatchDetail's "wrong" case).
+  const resolvedNodes = nodes.filter(n => n.exists && n.qid);
+  const p171ByQid = new Map();
+  if (resolvedNodes.length) {
+    const values = resolvedNodes.map(n => `wd:${n.qid}`).join(' ');
+    const rows = await sparqlAllRowsWithFallback(
+      `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT ?item ?parent WHERE { VALUES ?item { ${values} } OPTIONAL { ?item wdt:P171 ?parent } }`,
+      'Taxonomic tree — P171 check for existing ancestors'
+    );
+    for (const r of rows) {
+      const qid = r.item.split('/').pop();
+      if (!p171ByQid.has(qid)) p171ByQid.set(qid, []);
+      if (r.parent) p171ByQid.get(qid).push(r.parent.split('/').pop());
+    }
+  }
+  const needsLinking = [];
+  for (let i = 1; i < nodes.length; i++) {
+    const node = nodes[i];
+    const parent = nodes[i - 1];
+    if (!node.exists || !node.qid || !parent.exists || !parent.qid) continue;
+    const existingParents = p171ByQid.get(node.qid) || [];
+    if (existingParents.length) continue; // has SOME P171 already — not this tool's to touch
+    needsLinking.push({
+      node, parent,
+      commands: `${node.qid}\tP171\t${parent.qid}\tS248\t${QS_REF_INATURALIST}`,
+    });
+  }
+
+  return { nodes, missing, needsLinking };
 }
 
 function taxonomicTreePanel(t, info) {
-  const { nodes, missing } = info;
+  const { nodes, missing, needsLinking } = info;
   if (!nodes.length) return '';
 
+  const needsLinkingByNode = new Set((needsLinking || []).map(x => x.node));
+
   const rows = nodes.map(node => {
-    const wdCell = node.qid
-      ? `<a href="https://www.wikidata.org/wiki/${node.qid}" target="_blank" rel="noopener">${node.qid}</a>`
-      : node.ambiguousQids
-        ? `<span class="pill" title="${node.ambiguousQids.length} Wikidata items share this exact name">⚠ ambiguous (${node.ambiguousQids.length})</span>`
-        : `<span class="pill">missing</span>`;
+    let wdCell;
+    if (node.qid) {
+      wdCell = `<a href="https://www.wikidata.org/wiki/${node.qid}" target="_blank" rel="noopener">${node.qid}</a>`;
+      if (needsLinkingByNode.has(node)) {
+        wdCell += ` <span class="pill-warn" title="No P171 (parent taxon) statement at all yet — see the linking batch below">⚠ not linked</span>`;
+      }
+    } else if (node.ambiguousQids) {
+      wdCell = `<span class="pill" title="${node.ambiguousQids.length} Wikidata items share this exact name">⚠ ambiguous (${node.ambiguousQids.length})</span>`;
+    } else {
+      wdCell = `<span class="pill">missing</span>`;
+    }
     const gbifCell = node.gbifAgrees === true
       ? `✓${node.gbifKey ? ` <a href="https://www.gbif.org/species/${node.gbifKey}" target="_blank" rel="noopener">GBIF ${node.gbifKey}</a>` : ''}`
       : node.gbifAgrees === false
@@ -1066,16 +1201,18 @@ function taxonomicTreePanel(t, info) {
 
   const missingCount = missing.length;
   const resolvedParentCount = missing.filter(m => m.parentResolved).length;
-  let batchSection = '';
+  let createSection = '';
   if (missingCount) {
     const batchId = `tree-batch-qs-${taxonActionPanelSeq++}`;
     const commands = missing.map(m => m.commands).join('\n');
     const unresolvedNote = missingCount > resolvedParentCount
-      ? ` ${missingCount - resolvedParentCount} of these don't get a <code>P171</code> at all — their own immediate parent is
-        also missing here, and QuickStatements can't reference a not-yet-created item as a value. Run this batch, note the
-        new QIDs, then add those <code>P171</code> statements by hand (or regenerate this panel once the parent exists).`
+      ? ` ${missingCount - resolvedParentCount} of these don't get a <code>P171</code> in this batch — their own immediate
+        parent is also missing here, and QuickStatements can't reference a not-yet-created item as a value (confirmed
+        against QuickStatements' own docs — it outright can't "create multiple items that are linked to each other"). Run
+        this batch, wait for it to actually land on Wikidata, then click "↻ Refresh from Wikidata" above: the linking
+        batch below picks up from there.`
       : '';
-    batchSection = `<p><strong>${missingCount} ancestor${missingCount === 1 ? '' : 's'} missing a Wikidata item</strong> —
+    createSection = `<p><strong>${missingCount} ancestor${missingCount === 1 ? '' : 's'} missing a Wikidata item</strong> —
       one QuickStatements batch to create ${missingCount === 1 ? 'it' : 'all of them'}, ${resolvedParentCount} already
       linked to a real parent via <code>P171</code>.${unresolvedNote}</p>
       <div class="stub-toolbar">
@@ -1085,13 +1222,36 @@ function taxonomicTreePanel(t, info) {
       <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
       <p class="identity-note">New items are drafts — review each one for notability and near-duplicates before running.</p>`;
   } else {
-    batchSection = `<p class="identity-note">Every ancestor in this lineage already has a Wikidata item.</p>`;
+    createSection = `<p class="identity-note">Every ancestor in this lineage already has a Wikidata item.</p>`;
+  }
+
+  // Phase 2 of the two-phase workflow above: once a Phase 1 batch has actually landed on
+  // Wikidata (checked live via "↻ Refresh from Wikidata", never assumed immediately —
+  // QLever can be weeks behind and even live WDQS has its own short indexing lag), every
+  // node it created is now a real, resolvable item — just still missing the P171 that
+  // couldn't be set the first time. This links the whole chain in one further batch,
+  // rather than one level per refresh, since everything Phase 1 created typically
+  // propagates together. Also catches an older, pre-existing item that simply never had
+  // P171 set — not only ones this tool itself just created.
+  let linkSection = '';
+  if (needsLinking && needsLinking.length) {
+    const batchId = `tree-link-qs-${taxonActionPanelSeq++}`;
+    const commands = needsLinking.map(x => x.commands).join('\n');
+    linkSection = `<p><strong>${needsLinking.length} ancestor${needsLinking.length === 1 ? '' : 's'} exist${needsLinking.length === 1 ? 's' : ''} on Wikidata but ${needsLinking.length === 1 ? "isn't" : "aren't"} linked to its parent yet</strong> —
+      one QuickStatements batch to add the missing <code>P171</code> statement(s), now that every item involved is a real,
+      already-resolved QID:</p>
+      <div class="stub-toolbar">
+        <button class="small-btn copy-stub-btn" data-target="${batchId}">Copy commands</button>
+        <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+      </div>
+      <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
   }
 
   return `<div class="identity-panel taxon-action-panel"><h3>Taxonomic tree</h3>
     <div class="synonymy-list-section">
       <table class="tree-table"><tbody>${rows}</tbody></table>
-      ${batchSection}
+      ${createSection}
+      ${linkSection}
     </div>
   </div>`;
 }
@@ -3013,7 +3173,7 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const plazi = t.plaziCount === null
     ? '<span class="pill" title="Plazi lookup only supports species-rank binomials">n/a</span>'
     : t.plaziCount > 0
-      ? `<button class="small-btn plazi-btn" data-genus="${encodeURIComponent(t.plaziGenusSpecies.genus)}" data-species="${encodeURIComponent(t.plaziGenusSpecies.species)}">${t.plaziCount} treatment${t.plaziCount === 1 ? '' : 's'}</button>`
+      ? `<button class="small-btn plazi-btn" data-genus="${encodeURIComponent(t.plaziGenusSpecies.genus)}" data-species="${encodeURIComponent(t.plaziGenusSpecies.species)}" data-inat-id="${t.inatId}">${t.plaziCount} treatment${t.plaziCount === 1 ? '' : 's'}</button>`
       : '<span class="pill">0</span>';
   const image = renderImageCell(t);
   const name = linkName
@@ -3528,6 +3688,7 @@ document.addEventListener('click', async (e) => {
   const genus = decodeURIComponent(btn.dataset.genus);
   const species = decodeURIComponent(btn.dataset.species);
   const label = `${genus} ${species}`;
+  const t = currentTaxa.find(x => x.inatId === Number(btn.dataset.inatId));
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'looking up…';
@@ -3571,7 +3732,30 @@ document.addEventListener('click', async (e) => {
         </div>
         <textarea id="${batchId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
     }
-    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul>${batchSection}</td>`;
+    // treatmentbot didn't just create the treatment item — it also linked it back to the
+    // taxon (P10594) and linked the taxon to the treatment's publication (P921). Only
+    // worth checking once the taxon itself is a known, resolved Wikidata item; and, per
+    // the two-phase pattern above, only proposed once BOTH sides of each link already
+    // exist on Wikidata (never as part of the treatment's own CREATE block).
+    let linkSection = '';
+    if (t && t.wikidata && t.wikidata.qid) {
+      const { taxonLinks, publicationLinks } = await resolveTreatmentLinkage(t, results, wdQidByUri).catch(() => ({ taxonLinks: [], publicationLinks: [] }));
+      const linkCommands = [...taxonLinks.map(x => x.commands), ...publicationLinks.map(x => x.commands)];
+      if (linkCommands.length) {
+        const linkBatchId = `treatment-link-qs-${taxonActionPanelSeq++}`;
+        const parts = [];
+        if (taxonLinks.length) parts.push(`${taxonLinks.length} treatment${taxonLinks.length === 1 ? '' : 's'} not yet linked from ${t.wikidata.qid} (<code>P10594</code>)`);
+        if (publicationLinks.length) parts.push(`${publicationLinks.length} publication${publicationLinks.length === 1 ? '' : 's'} not yet linked to ${t.wikidata.qid} (<code>P921</code>)`);
+        linkSection = `<p><strong>${parts.join(', and ')}</strong> — both sides already exist on Wikidata, so this batch just adds the missing relationship statement(s),
+          matching <a href="https://github.com/wikiproject-biodiversity/treatmentbot" target="_blank" rel="noopener">treatmentbot</a>'s own schema:</p>
+          <div class="stub-toolbar">
+            <button class="small-btn copy-stub-btn" data-target="${linkBatchId}">Copy commands</button>
+            <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+          </div>
+          <textarea id="${linkBatchId}" class="stub-textarea" readonly spellcheck="false">${linkCommands.join('\n')}</textarea>`;
+      }
+    }
+    plaziRow.innerHTML = `<td></td><td colspan="12">Plazi TreatmentBank treatments for <em>${label}</em> (via SynoSpecies' QLever endpoint):<ul>${items}</ul>${batchSection}${linkSection}</td>`;
     row.after(plaziRow);
   } catch (err) {
     plaziRow = document.createElement('tr');
