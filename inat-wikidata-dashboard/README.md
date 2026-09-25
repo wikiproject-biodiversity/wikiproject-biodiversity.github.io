@@ -135,14 +135,29 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    (`functions.py`, `process_treatments()`). The bot's own reference — `P248`
    ("stated in") → `Q54857867` (TreatmentBank) plus `P1992` again as a second snak in
    that *same* reference, not a separate one — is reused as-is. Deliberately narrower
-   than the bot itself: it also creates/updates a taxon item (`P225`/`P105`/`P171`/…,
-   linked to the treatment via `P10594`) and a publication item resolved by DOI — not
-   reproduced here, since this tool already has its own, independently-verified
-   versions of both (`buildQuickStatements`, `fetchWikidataItemByDoi`/
-   `buildPublicationQS`) and duplicating the bot's idle ones would risk drifting out
-   of sync. Two or more missing treatments for one species get a combined batch (same
-   "fix them all in one QuickStatements run" convention as the synonymy panel), one
-   treatment gets its own per-row toggle draft.
+   than the bot itself: it also creates/updates a taxon item (`P225`/`P105`/`P171`/…)
+   and a publication item resolved by DOI — not reproduced here, since this tool
+   already has its own, independently-verified versions of both
+   (`buildQuickStatements`, `fetchWikidataItemByDoi`/`buildPublicationQS`) and
+   duplicating the bot's idle ones would risk drifting out of sync. Two or more
+   missing treatments for one species get a combined batch (same "fix them all in one
+   QuickStatements run" convention as the synonymy panel), one treatment gets its own
+   per-row toggle draft.
+
+   What the treatment `CREATE` block above *doesn't* do — because `LAST` can only ever
+   be the subject of a QuickStatements line, never a value another line points at — is
+   the two relationship statements the bot also set: `P10594` (taxonomic treatment) on
+   the *taxon's own* item, pointing at the treatment, and `P921` (main subject) on the
+   *publication's own* item, pointing at the taxon. Both need an item on each side to
+   already exist, so `resolveTreatmentLinkage()` checks for that live, every time the
+   treatments panel is opened (same two-phase reasoning as the taxonomic tree's `P171`
+   linking below — see that section for the underlying QuickStatements constraint):
+   for each treatment that already resolves to a Wikidata item but isn't yet pointed
+   at from `t.wikidata` via `P10594`, and for each treatment's DOI that already
+   resolves to a publication item not yet carrying `P921` → `t.wikidata`, it proposes
+   a one-line addition. Gated on `t.wikidata` existing and never touching a `P10594`/
+   `P921` value that's already present — this only ever adds a missing link, never
+   second-guesses an existing one.
 5. **BHL literature (on demand)** — the "look up" button on each row runs a genuinely
    *federated* SPARQL query against a personal experimental Biodiversity Heritage
    Library knowledge graph (`koetai.semscape.org`): it starts in a named graph of BHL
@@ -433,6 +448,17 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     gap unexplained. Found live testing this: "Tracheophyta" (phylum, in the *Ajuga*
     lineage) has no Wikidata item at all despite every rank around it existing — the exact
     kind of gap this panel exists to surface.
+
+    That's phase one. Phase two picks up the `P171` links phase one couldn't write: every
+    time this panel is (re-)built — including via "↻ Refresh from Wikidata", which is the
+    intended way to come back to it after running a `CREATE` batch and giving it time to
+    propagate — it re-checks, live against WDQS, which nodes now resolve to a real item
+    but still have *no* `P171` statement at all, and proposes linking each to its immediate
+    parent's own resolved item in a second, separate QuickStatements batch. Deliberately
+    only when `P171` is completely absent, same as the GBIF-mismatch check below: adding a
+    second, disagreeing value would create a conflict, not fix one. This also naturally
+    catches ancestors that were already sitting on Wikidata unlinked, not just ones phase
+    one just created.
 14. **Bulk GBIF cross-check** — Step 6 of the main run (`resolveGbifCrossCheck()`), batching
     items 12's two checks across every currently loaded taxon at once — VALUES lists
     instead of one request per taxon, the same way the rest of the pipeline batches
