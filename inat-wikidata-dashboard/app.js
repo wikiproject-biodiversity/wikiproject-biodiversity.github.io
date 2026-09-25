@@ -1370,6 +1370,33 @@ SELECT ?name ?item WHERE { VALUES ?name { ${values} } ?item wdt:P225 ?name }`;
     const qid = r.item.split('/').pop();
     (map.get(r.name) || map.set(r.name, []).get(r.name)).push(qid);
   }
+
+  // sparqlAllRowsWithFallback only re-checks live WDQS when the WHOLE batch comes back
+  // empty — right for a single-item lookup, wrong here: a handful of long-established
+  // synonyms matching on QLever is enough to skip the live fallback entirely, so QLever's
+  // "no match" gets trusted for every OTHER name too — including one created on Wikidata
+  // moments ago (e.g. by this tool's own CREATE batch, run earlier in this same session)
+  // that QLever's mirror hasn't caught up to yet. Found live: a synonym CREATE batch
+  // re-proposing two items QuickStatements itself then refused as exact duplicates,
+  // because their brand-new labels hadn't reached QLever yet. So: whichever names got no
+  // match at all from the batch above get one more, targeted live-WDQS check — the same
+  // "trust a match, re-check a miss" rule this tool already applies everywhere else
+  // (sparqlFirstRowWithFallback), just applied per-name instead of per-whole-batch, since
+  // a CREATE draft is the one place a stale "miss" here does real damage.
+  const missing = names.filter(n => !map.has(n));
+  if (missing.length) {
+    try {
+      const missingValues = missing.map(n => sparqlStringLiteral(n)).join(' ');
+      const recheckQuery = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?name ?item WHERE { VALUES ?name { ${missingValues} } ?item wdt:P225 ?name }`;
+      const recheckRows = await sparqlViaComunica(recheckQuery, WDQS_ENDPOINT, { silent: true, retries: 1, label: 'Live re-check for synonym names missing on QLever' });
+      for (const r of recheckRows) {
+        if (!/\/Q\d+$/.test(r.item)) continue;
+        const qid = r.item.split('/').pop();
+        (map.get(r.name) || map.set(r.name, []).get(r.name)).push(qid);
+      }
+    } catch (e) { /* keep the QLever-only result — same degrade-gracefully rule sparqlAllRowsWithFallback's own catch uses */ }
+  }
   return map;
 }
 
