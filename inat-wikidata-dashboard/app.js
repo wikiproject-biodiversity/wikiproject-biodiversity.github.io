@@ -2572,8 +2572,6 @@ const taxonDetailBackBtn = document.getElementById('taxonDetailBack');
 const taxonDetailHeaderEl = document.getElementById('taxonDetailHeader');
 const taxonDetailRowEl = document.getElementById('taxonDetailRow');
 const taxonDetailActionsEl = document.getElementById('taxonDetailActions');
-const synonymyCheckSectionEl = document.getElementById('synonymyCheckSection');
-const checkSynonymyBtn = document.getElementById('checkSynonymyBtn');
 const synonymFilterBtn = document.getElementById('synonymFilterBtn');
 const wikidataMismatchFilterBtn = document.getElementById('wikidataMismatchFilterBtn');
 const statSynonymDuplicateCard = document.getElementById('statSynonymDuplicateCard');
@@ -3070,7 +3068,6 @@ async function renderTaxonDetail(t) {
   filtersEl.hidden = true;
   bulkActionsEl.hidden = true;
   tableWrapEl.hidden = true;
-  synonymyCheckSectionEl.hidden = true;
   articleQualitySectionEl.hidden = true;
   taxonDetailEl.hidden = false;
 
@@ -3453,7 +3450,6 @@ function showTableView() {
     statsEl.hidden = false;
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
-    synonymyCheckSectionEl.hidden = false;
     articleQualitySectionEl.hidden = false;
     updateStats(); // re-derives the bulk-action button's visibility too
   }
@@ -4270,8 +4266,9 @@ function updateStats() {
   statsEl.hidden = false;
   updateBulkInatIdAction(inatIdMissingCount);
 
-  // Only meaningful once the opt-in GBIF cross-check has actually run — the stat cards
-  // and filter buttons stay hidden until then rather than showing a misleading "0".
+  // Only meaningful once the GBIF cross-check has actually run (step 6 of run(), or — if
+  // that step itself failed — never) — the stat cards and filter buttons stay hidden until
+  // then rather than showing a misleading "0".
   if (gbifCrossCheckDone) {
     const synonymDuplicateCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
     const wikidataMismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
@@ -4327,7 +4324,6 @@ async function run() {
   bulkActionsEl.hidden = true;
   bulkInatIdBox.hidden = true;
   taxonDetailEl.hidden = true;
-  synonymyCheckSectionEl.hidden = true;
   statSynonymDuplicateCard.hidden = true;
   statWikidataMismatchCard.hidden = true;
   synonymFilterBtn.hidden = true;
@@ -4350,7 +4346,7 @@ async function run() {
   // A step count the user can see progress against, however imprecise any single step's
   // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
   // isn't knowable until it's running (see runBatchedStep's live ETA for that part).
-  const TOTAL_STEPS = 5;
+  const TOTAL_STEPS = 6;
   const step = (n, label) => `Step ${n}/${TOTAL_STEPS}: ${label}`;
 
   try {
@@ -4372,12 +4368,23 @@ async function run() {
     setStatusHeader(step(5, `Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`));
     await resolveCommonsStatus(taxa);
 
+    // Used to be its own opt-in "Cross-check against GBIF" button — always clicked in
+    // practice, so it's just part of the run now. Its own failure shouldn't sink an
+    // otherwise-successful run (GBIF's mirror is one more public endpoint this tool
+    // doesn't control), so it's wrapped separately rather than left in the outer try.
+    setStatusHeader(step(6, `Cross-checking against GBIF (synonymy + classification)…`));
+    try {
+      await resolveGbifCrossCheck(taxa);
+      gbifCrossCheckDone = true;
+    } catch (e) {
+      log(`GBIF cross-check failed (${e.message}) — continuing without it`, 'warn');
+    }
+
     currentTaxa = taxa;
     setStatusHeader(`Done — ${taxa.length} taxa loaded.`);
     updateStats();
     filtersEl.hidden = false;
     tableWrapEl.hidden = false;
-    synonymyCheckSectionEl.hidden = false;
     articleQualitySectionEl.hidden = false;
     currentFilter = 'all';
     [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
@@ -4390,30 +4397,6 @@ async function run() {
     statusSpinnerEl.hidden = true;
   }
 }
-
-checkSynonymyBtn.addEventListener('click', async () => {
-  checkSynonymyBtn.disabled = true;
-  const originalText = checkSynonymyBtn.textContent;
-  checkSynonymyBtn.textContent = 'Checking…';
-  statusSpinnerEl.hidden = false;
-  setStatusHeader('Cross-checking against GBIF (synonymy + classification)…');
-  try {
-    await resolveGbifCrossCheck(currentTaxa);
-    gbifCrossCheckDone = true;
-    updateStats();
-    renderTable();
-    const dupCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
-    const mismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
-    log(`GBIF cross-check — ${dupCount} taxa with multiple Wikipedia pages via synonymy, ${mismatchCount} with a Wikidata/GBIF classification mismatch.`);
-  } catch (e) {
-    log(`GBIF cross-check failed: ${e.message}`, 'err');
-  } finally {
-    setStatusHeader(`Done — ${currentTaxa.length} taxa loaded.`);
-    checkSynonymyBtn.disabled = false;
-    checkSynonymyBtn.textContent = originalText;
-    statusSpinnerEl.hidden = true;
-  }
-});
 
 checkArticleQualityBtn.addEventListener('click', async () => {
   checkArticleQualityBtn.disabled = true;
