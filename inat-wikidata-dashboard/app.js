@@ -402,6 +402,41 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
     }
   }
 
+  // A handful of taxa still come up empty even after that — not because they're missing
+  // from Wikidata, but because the item's own P225 doesn't literally match iNaturalist's
+  // name (a typo: found live, Q6101631's P225 reads "Izatha balanophoras" — an extra "s" —
+  // against iNaturalist's "Izatha balanophora"). That item is nonetheless a confident,
+  // already-verified match: it carries P3151 = this exact iNaturalist taxon id, the one
+  // property whose entire purpose is this cross-reference. Missing it wrongly reports "not
+  // found" AND lets the "propose QuickStatements" flow draft a CREATE for a species that
+  // already has an item — so every remaining miss gets one more check, this time by id
+  // instead of by name, before this tool gives up on it.
+  const stillUnmatched = taxa.filter(t => !(byName.get(t.name) || []).length);
+  if (stillUnmatched.length) {
+    try {
+      await runBatchedStep(stillUnmatched, 'Wikidata lookup — matching remaining misses by iNaturalist id (P3151)', async (batch) => {
+        const idToTaxon = new Map(batch.map(t => [String(t.inatId), t]));
+        const values = batch.map(t => sparqlStringLiteral(String(t.inatId))).join(' ');
+        const query = `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?inat ?wdTaxon ?gbif ?commonsCat WHERE {
+  VALUES ?inat { ${values} }
+  ?wdTaxon wdt:P3151 ?inat .
+  OPTIONAL { ?wdTaxon wdt:P846 ?gbif }
+  OPTIONAL { ?wdTaxon wdt:P373 ?commonsCat }
+}`;
+        const rows = await sparqlViaComunica(query, WDQS_ENDPOINT, { silent: true, retries: 1 });
+        for (const r of rows) {
+          const t = idToTaxon.get(r.inat);
+          if (!t) continue;
+          pushWikidataCandidate(byName, { taxonLabel: t.name, wdTaxon: r.wdTaxon, gbif: r.gbif, inat: r.inat, commonsCat: r.commonsCat });
+        }
+        return rows.length;
+      }, WDQS_BATCH_SIZE);
+    } catch (e) {
+      log(`P3151 fallback lookup failed (${e.message}) — ${stillUnmatched.length} taxa still unmatched by name`, 'warn');
+    }
+  }
+
   for (const t of taxa) {
     const candidates = byName.get(t.name) || [];
     // The query's OPTIONAL joins (gbif/inat/commonsCat) each produce one row per VALUE,
