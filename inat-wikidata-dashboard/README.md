@@ -220,6 +220,17 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    showing the button. iNaturalist's photo host (`inaturalist-open-data.s3.amazonaws.com`) is on
    that list today. You still need your own Wikimedia account and click "Upload file" on Commons
    yourself — nothing is uploaded automatically by this page.
+
+   Upload, then add to Wikidata, used to be two disconnected steps: the "propose adding it"
+   action (item 7 above) only ever saw *this run's* already-batched Commons status, so it
+   couldn't know a photo you'd just uploaded had landed without a full pipeline re-run. Fixed
+   with a "↻ Uploaded it? Check Commons & propose adding to Wikidata" button right in this same
+   upload box (`checkCommonsUploadStatus()` — the single-taxon version of the batch check in
+   item 6, plus a live `P18` re-check): found → the taxon's own row refreshes in place (not a
+   full `renderTable()`, which would wipe this very box mid-read — same "patch just this row's
+   cells" technique `renderTaxonDetail` uses for its mini-row) and the `P18` QuickStatements
+   draft appears right there, inline; not found yet → a plain "give it a few minutes, QLever's
+   mirror needs to catch up" message, not a dead end.
 9. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es/pt columns.
    In the spirit of
    [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker),
