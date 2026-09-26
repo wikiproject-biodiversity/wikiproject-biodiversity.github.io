@@ -71,6 +71,7 @@
   <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es+pt</label></div>
   <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
   <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
+  <div class="stat warn"><span id="statNoImage">0</span><label>WD item, no image</label></div>
   <div class="stat warn" id="statSynonymDuplicateCard" hidden><span id="statSynonymDuplicate">0</span><label>multiple WP via synonymy</label></div>
   <div class="stat danger" id="statWikidataMismatchCard" hidden><span id="statWikidataMismatch">0</span><label>WD classification vs GBIF</label></div>
   <div class="stat warn" id="statStubArticleCard" hidden><span id="statStubArticle">0</span><label>stub-sized article</label></div>
@@ -83,6 +84,7 @@
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
   <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
   <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
+  <button class="filter-btn" data-filter="no-image">WD item, no image</button>
   <button class="filter-btn" data-filter="synonym-duplicate" id="synonymFilterBtn" hidden>Multiple WP (synonymy)</button>
   <button class="filter-btn" data-filter="wikidata-gbif-mismatch" id="wikidataMismatchFilterBtn" hidden>WD needs curation (vs GBIF)</button>
   <button class="filter-btn" data-filter="stub-article" id="stubArticleFilterBtn" hidden>Stub-sized article</button>
