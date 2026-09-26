@@ -581,6 +581,24 @@ scrolling panel — each step logs one aggregate line (batches, items, rows, ela
 rather than one line per batch, so a large project (hundreds of taxa, dozens of batches
 per step) doesn't turn it into an unscrollable wall of near-identical text.
 
+**Resuming a run** — a project or user with thousands of observations can take a genuinely
+long time to work through all 6 steps, and losing that to a closed tab (or just wanting to
+pick up a run after an app.js update) meant starting over from zero every time. A completed
+run is now auto-saved to this browser's `localStorage`, keyed by exact scope
+(`runCacheKey()` — project/user/taxon/OSM-area, case-insensitive), including after the
+opt-in article-quality check runs. Clicking "Load observations →" for a scope with a saved
+copy offers to resume instantly instead of re-fetching, or start fresh, or discard the
+saved copy outright (`resumePrompt` panel). Per-taxon on-demand caches (`_stubContext`,
+`_qsContext`, `_bhlResults`, `_candidateImages` — anything starting with `_`) are stripped
+before saving (`stripEphemeralFields()`): they're re-fetched fresh every time the curation
+page opens regardless, so persisting them would only bloat storage with data that's often
+stale by the time a resumed session would use it again. A saved copy from an incompatible
+future version (`RUN_CACHE_VERSION`) is discarded rather than partially applied, same
+"don't guess" standard as everything else here. This is local to one browser/device — it
+doesn't survive clearing site data, and doesn't help move a run to a different machine; a
+storage-quota or private-browsing failure degrades to "can't resume later" rather than
+failing the run itself.
+
 ### Known limitations (v1)
 
 - Matching against Wikidata is by **exact scientific name string** (`wdt:P225`), with no
