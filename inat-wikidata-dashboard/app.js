@@ -1626,7 +1626,13 @@ function synonymyPanel(t, info) {
           block.push(`LAST\tLen\t${qsString(name)}`);
           block.push(`LAST\tLmul\t${qsString(name)}`);
           block.push(`LAST\tAen\t${qsString(name)}`);
-          block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym of ${acceptedName}`)}`);
+          // Deliberately doesn't name the accepted taxon here (was "species synonym of
+          // Boana xerophylla" — found live not aging well: synonymy gets revised often
+          // enough that a name baked into free-text description silently goes stale, with
+          // nobody likely to notice or fix it after the fact). The actual "synonym of"
+          // relationship is already asserted properly below as P1420 — a structured
+          // statement that can be corrected if the accepted name changes, unlike this text.
+          block.push(`LAST\tDen\t${qsString(`${rank || 'taxon'} synonym`)}`);
           // The synonym's own GBIF backbone id, when the record it came from had one —
           // same self-referential "GBIF says this is GBIF id X" pattern buildQuickStatements
           // already uses for the main taxon's own P846.
