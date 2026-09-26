@@ -89,8 +89,8 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    pill still shows in that case (still true, still useful to know), just without the
    actionable button — same treatment the curation page's ambiguous-match panel already
    gave this exact situation; the single-row and bulk "link iNat ID" actions were the one
-   place that hadn't caught up to it. It has its own stat card and filter ("WD item, no iNat
-   ID") so it doesn't get lost
+   place that hadn't caught up to it. It has its own row and filter ("WD item, no iNat
+   ID") in the collapsible "N taxa need attention" panel (see below) so it doesn't get lost
    among the Wikipedia-coverage numbers, which are a separate concern. The opposite data
    problem — an item carrying *two or more* different `P3151` values (an old iNaturalist
    taxon id left behind after a merge/split, say) — gets its own flag too (⚠ N iNat IDs —
@@ -193,8 +193,8 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    *a* picture, vs. is *this run's* specific photo already uploaded). Same "trust a match,
    re-check a miss" QLever-then-WDQS staleness handling as the sitelinks check above, for the
    same reason — a false "no image" is the wrong direction to be wrong in for something a
-   curator might act on. Flagged with a "⚠ no image" pill (WD column), its own stat card and
-   filter ("WD item, no image"); suppressed on an ambiguous match, same reasoning as the "no
+   curator might act on. Flagged with an "IMG" badge (WD column) and its own row and filter
+   ("WD item, no image") in the collapsible issues panel; suppressed on an ambiguous match, same reasoning as the "no
    iNat ID" pill — `t.wikidata` there is only a best guess, so flagging *its* image coverage
    risks pointing at the wrong item's gap entirely. "↻ Refresh from Wikidata" re-checks this
    live too, alongside the match and sitelinks it already refreshed.
@@ -598,8 +598,9 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     stub-template/category conventions, which vary by language, and no substitute for
     actually opening the article (a short well-cited article and a long unreferenced one
     both slip past a byte count either way). The ✓ badge for an existing article grows a
-    size (`✓ 1.4 kB`) and a ⚠ once checked, with its own stat card and "Stub-sized article"
-    filter, same "hidden until the opt-in check has actually run" treatment as the GBIF
+    size (`✓ 1.4 kB`) and a ⚠ once checked, with its own row and "Stub-sized article"
+    filter in the collapsible issues panel, same "hidden until the opt-in check has
+    actually run" treatment as the GBIF
     cross-check's own stats. One real bug found building this: MediaWiki normalizes every
     title it's queried with (underscores → spaces, first-letter case) before echoing it
     back — querying "Dryandra_moth" (the literal path segment straight out of the article's
@@ -634,6 +635,35 @@ future version (`RUN_CACHE_VERSION`) is discarded rather than partially applied,
 doesn't survive clearing site data, and doesn't help move a run to a different machine; a
 storage-quota or private-browsing failure degrades to "can't resume later" rather than
 failing the run itself.
+
+**Wikidata data-quality issues, consolidated** — every check above that flags a problem
+with the matched Wikidata item (ambiguous match, missing iNat ID, conflicting iNat IDs, no
+image, GBIF mismatch) used to bolt its own pill-plus-button straight onto the Wikidata
+cell, and its own always-visible stat card and filter button, independently. A taxon
+unlucky enough to have several of these at once — missing an iNat ID *and* an image *and*
+disagreeing with GBIF, all plausible together — showed three stacked pills and three
+buttons in one cell, and the stats row grew a new card for every new check with no
+grouping between them. Found doing a deliberate UX pass over the table, not a specific bug
+report. Replaced with:
+- `wikidataIssues(t)` — the single source of truth for "what's wrong with this taxon's
+  Wikidata match". Every badge and count everywhere else in the app reads from this one
+  list; adding a future check means one new entry here, not a new pill bolted onto the
+  cell directly.
+- One compact badge per issue in the Wikidata cell (`⚠`-style pills replaced with a 2–4
+  character abbreviation — `ID`, `IMG`, `GBIF`, `2+`) instead of a stacked pill-plus-button
+  per issue. Each badge reuses the *exact* CSS class its existing click handler already
+  listens for (`inatlink-btn`, `inatconflict-btn`, `imagelink-btn`, `gbifmismatch-btn`), so
+  this was a presentation-only change — not one existing handler needed to change.
+- The stats row now shows only the 4 core, always-relevant numbers (total/matched/missing
+  Wikipedia). Every Wikidata-issue count moved into a single collapsible `<details>` panel
+  ("N taxa need attention", same `<details>`/`<summary>` pattern already used for "How this
+  works" below) — each row pairs its count directly with the filter that shows just that
+  issue, instead of a stat card and a same-labelled filter button living in two separate
+  flat lists a reader has to mentally match up. `N` is a count of *distinct* taxa with at
+  least one issue, not a sum of the individual counts — the same taxon commonly has more
+  than one issue at once, and summing would double-count it. Picking one of these filters
+  keeps the panel open, so the just-activated filter doesn't disappear from view along with
+  every reason to remember it's active.
 
 ### Known limitations (v1)
 
