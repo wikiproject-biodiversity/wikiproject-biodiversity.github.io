@@ -2906,12 +2906,11 @@ const taxonDetailRowEl = document.getElementById('taxonDetailRow');
 const taxonDetailActionsEl = document.getElementById('taxonDetailActions');
 const synonymFilterBtn = document.getElementById('synonymFilterBtn');
 const wikidataMismatchFilterBtn = document.getElementById('wikidataMismatchFilterBtn');
-const statSynonymDuplicateCard = document.getElementById('statSynonymDuplicateCard');
-const statWikidataMismatchCard = document.getElementById('statWikidataMismatchCard');
 const articleQualitySectionEl = document.getElementById('articleQualitySection');
 const checkArticleQualityBtn = document.getElementById('checkArticleQualityBtn');
 const stubArticleFilterBtn = document.getElementById('stubArticleFilterBtn');
-const statStubArticleCard = document.getElementById('statStubArticleCard');
+const issuesDetailsEl = document.getElementById('issuesDetails');
+const issuesSummaryEl = document.getElementById('issuesSummary');
 let gbifCrossCheckDone = false;
 let articleQualityChecked = false;
 
@@ -3228,6 +3227,64 @@ function noImageOnWikidata(t) {
   return !!t.wikidata && !t.wikidataAmbiguous && !!t.wikidataNoImage;
 }
 
+// The single source of truth for "what's wrong with this taxon's Wikidata match" — every
+// badge in the table's Wikidata cell, and (via updateStats' aggregate count) the "N taxa
+// need attention" summary, reads from exactly this list. Before this existed, each check
+// added its own independent pill-plus-button straight into buildTaxonRowCells, and by the
+// fourth or fifth one (no iNat ID, iNat ID conflict, no image, GBIF mismatch) a single
+// cell could show three stacked pills and three buttons for one taxon with the bad luck
+// to have several issues at once — found doing a UX pass over this table, not a specific
+// bug report. Adding a future check now means one entry here, not a new pill+button
+// bolted onto the cell directly. `action` is the exact CSS class the corresponding click
+// handler already listens for (inatlink-btn, inatconflict-btn, imagelink-btn,
+// gbifmismatch-btn) — reusing those classes verbatim means this is a presentation change
+// only; not one existing handler needed to change.
+function wikidataIssues(t) {
+  const issues = [];
+  if (!t.wikidata) return issues; // "not found" is its own state, handled separately — nothing to list here
+  if (t.wikidataAmbiguous) {
+    issues.push({ key: 'ambiguous', severity: 'warn', abbr: '?', label: 'Multiple Wikidata items share this scientific name — this tool cannot be sure this is the right one' });
+    // Still true, still worth knowing — but no action: resolving the ambiguous match
+    // comes first, so this can't safely offer to assert a P3151 link yet. Every check
+    // below this point assumes t.wikidata is confidently correct and doesn't apply here.
+    if (!inatIdLinked(t)) {
+      issues.push({ key: 'no-inat-id', severity: 'warn', abbr: 'ID', label: `No iNaturalist taxon id (P3151) pointing back at taxon ${t.inatId} — resolve the ambiguous match first` });
+    }
+    return issues;
+  }
+  if (t.wikidataInatIdConflict) {
+    issues.push({
+      key: 'inat-id-conflict', severity: 'danger', abbr: `${t.wikidataInatIdConflict.length}+`,
+      label: `${t.wikidataInatIdConflict.length} different iNaturalist taxon ids (P3151) on this item — which to remove?`,
+      action: 'inatconflict-btn',
+    });
+  } else if (!inatIdLinked(t)) {
+    issues.push({
+      key: 'no-inat-id', severity: 'warn', abbr: 'ID',
+      label: `No iNaturalist taxon id (P3151) pointing back at taxon ${t.inatId}`,
+      action: 'inatlink-btn',
+    });
+  }
+  if (t.wikidataNoImage) {
+    issues.push({
+      key: 'no-image', severity: 'warn', abbr: 'IMG',
+      label: `${t.wikidata.qid} has no image (P18) statement at all`,
+      action: needsWikidataImageLink(t) ? 'imagelink-btn' : null,
+    });
+  }
+  if (t.wikidataGbifMismatch) {
+    const m = t.wikidataGbifMismatch;
+    issues.push({
+      key: 'gbif-mismatch', severity: 'danger', abbr: 'GBIF',
+      label: m.kind === 'wrong'
+        ? `GBIF's classification disagrees: expects ${m.expected}, Wikidata has ${m.actual}`
+        : `Missing parent taxon — GBIF expects ${m.expected}, Wikidata has none at all`,
+      action: 'gbifmismatch-btn',
+    });
+  }
+  return issues;
+}
+
 function matchesFilter(t) {
   if (currentFilter === 'all') return true;
   if (currentFilter === 'unresolved') return !t.wikidata;
@@ -3328,35 +3385,22 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const photo = photoUrl
     ? `<img class="thumb" src="${photoUrl}" alt="" title="${photoTitle}">${usingObsPhoto ? photographerCredit(t.obsPhoto) : ''}`
     : `<div class="thumb"></div>`;
+  // One compact badge per issue instead of a growing pile of pills-plus-buttons — see
+  // wikidataIssues()'s own comment for why. Each badge reuses the exact class name its
+  // existing click handler already listens for, so the draft/toggle behavior behind it
+  // is completely unchanged; only the presentation is new.
   const wdLink = t.wikidata
-    ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>${t.wikidataAmbiguous ? ' <span class="pill" title="Multiple Wikidata items share this scientific name">⚠ ambiguous</span>' : ''}`
+    ? `<a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>`
     : '';
-  const gbifMismatchBadge = t.wikidataGbifMismatch
-    ? ` <button class="small-btn gbifmismatch-btn" data-inat-id="${t.inatId}">⚠ needs curation (vs GBIF)</button>`
-    : '';
-  // Only shown once the item itself is confidently known — same reasoning as the "no iNat
-  // ID" pill above: an ambiguous match means this tool isn't sure `t.wikidata` is even the
-  // right item, so flagging ITS image coverage would point a curator at the wrong item.
-  const noImageBadge = t.wikidata && !t.wikidataAmbiguous && t.wikidataNoImage
-    ? ` <span class="pill" title="${t.wikidata.qid} has no image (P18) statement at all">⚠ no image</span>` +
-      (needsWikidataImageLink(t)
-        ? ` <button class="small-btn imagelink-btn" data-inat-id="${t.inatId}">propose adding it</button>`
-        : '')
-    : '';
-  const wd = (!t.wikidata
+  const issueBadges = wikidataIssues(t).map(issue => {
+    const tag = issue.action ? 'button' : 'span';
+    const cls = `issue-badge issue-${issue.severity}${issue.action ? ` ${issue.action}` : ''}`;
+    const dataAttr = issue.action ? ` data-inat-id="${t.inatId}"` : '';
+    return `<${tag} class="${cls}" title="${escapeHtml(issue.label)}"${dataAttr}>${issue.abbr}</${tag}>`;
+  }).join('');
+  const wd = !t.wikidata
     ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
-    : t.wikidataInatIdConflict
-      ? `${wdLink} <button class="small-btn inatconflict-btn" data-inat-id="${t.inatId}">⚠ ${t.wikidataInatIdConflict.length} iNat IDs — which to remove?</button>`
-      : inatIdLinked(t)
-        ? wdLink
-        // No "link iNat ID" button when the match itself is ambiguous — same reasoning as
-        // inatIdMissing() above: this tool doesn't know if `t.wikidata` is even the right
-        // item yet, so it shouldn't offer to assert a P3151 link on it. The "no iNat ID"
-        // pill still shows (still true, still useful to know), just without the action.
-        : t.wikidataAmbiguous
-          ? `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId} — but resolve the ambiguous match first, this tool isn't sure this is even the right item">⚠ no iNat ID</span>`
-          : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`
-  ) + gbifMismatchBadge + noImageBadge;
+    : `${wdLink}${issueBadges ? ` <span class="issue-badges">${issueBadges}</span>` : ''}`;
   const gbif = t.wikidata && t.wikidata.gbif
     ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
     : '<span class="pill">—</span>';
@@ -4677,6 +4721,10 @@ document.getElementById('filters').addEventListener('click', (e) => {
   if (!btn) return;
   currentFilter = btn.dataset.filter;
   [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b === btn));
+  // Picking one of the issue rows from inside the collapsed panel should leave it open —
+  // otherwise the just-selected, now-active filter disappears from view along with
+  // every reason to remember which one is active.
+  if (btn.classList.contains('issue-row')) issuesDetailsEl.open = true;
   renderTable();
 });
 
@@ -4829,27 +4877,38 @@ function updateStats() {
   statsEl.hidden = false;
   updateBulkActions(inatIdMissingCount, unresolvedCount, imageLinkCount);
 
-  // Only meaningful once the GBIF cross-check has actually run (step 6 of run(), or — if
-  // that step itself failed — never) — the stat cards and filter buttons stay hidden until
-  // then rather than showing a misleading "0".
+  // Only meaningful once the GBIF cross-check has actually run (step 7 of run(), or — if
+  // that step itself failed — never) — these rows stay hidden until then rather than
+  // showing a misleading "0".
+  let synonymDuplicateCount = 0, wikidataMismatchCount = 0;
   if (gbifCrossCheckDone) {
-    const synonymDuplicateCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
-    const wikidataMismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
+    synonymDuplicateCount = currentTaxa.filter(t => t.hasSynonymDuplication).length;
+    wikidataMismatchCount = currentTaxa.filter(t => t.wikidataGbifMismatch).length;
     document.getElementById('statSynonymDuplicate').textContent = synonymDuplicateCount;
     document.getElementById('statWikidataMismatch').textContent = wikidataMismatchCount;
-    statSynonymDuplicateCard.hidden = false;
-    statWikidataMismatchCard.hidden = false;
     synonymFilterBtn.hidden = false;
     wikidataMismatchFilterBtn.hidden = false;
   }
 
   // Same pattern, for the separate opt-in article-quality check.
+  let stubCount = 0;
   if (articleQualityChecked) {
-    const stubCount = currentTaxa.filter(t => t.hasStubArticle).length;
+    stubCount = currentTaxa.filter(t => t.hasStubArticle).length;
     document.getElementById('statStubArticle').textContent = stubCount;
-    statStubArticleCard.hidden = false;
     stubArticleFilterBtn.hidden = false;
   }
+
+  // One aggregate count across every "Wikidata data-quality" check, rather than a wall of
+  // individual stat cards — see the UX assessment this replaced. Distinct taxa, not a sum
+  // of the counts above (the same taxon commonly has more than one issue at once — no iNat
+  // ID *and* no image is the common case for a brand-new item, say — and summing would
+  // double-count it). The individual counts still live inside the collapsible panel below,
+  // each paired directly with the filter that shows just that issue.
+  const needsAttentionCount = currentTaxa.filter(t =>
+    inatIdMissing(t) || t.wikidataInatIdConflict || noImageOnWikidata(t) ||
+    t.wikidataGbifMismatch || t.hasSynonymDuplication || t.hasStubArticle
+  ).length;
+  issuesSummaryEl.textContent = `${needsAttentionCount} taxa need attention`;
 }
 
 // Collects every taxon still missing its iNaturalist id link into one QuickStatements
@@ -5024,14 +5083,12 @@ function resetRunUI() {
   bulkCreateBox.hidden = true;
   bulkImageLinkBox.hidden = true;
   taxonDetailEl.hidden = true;
-  statSynonymDuplicateCard.hidden = true;
-  statWikidataMismatchCard.hidden = true;
   synonymFilterBtn.hidden = true;
   wikidataMismatchFilterBtn.hidden = true;
   gbifCrossCheckDone = false;
   articleQualitySectionEl.hidden = true;
-  statStubArticleCard.hidden = true;
   stubArticleFilterBtn.hidden = true;
+  issuesDetailsEl.open = false;
   articleQualityChecked = false;
   identityState = null;
   currentTaxa = [];
