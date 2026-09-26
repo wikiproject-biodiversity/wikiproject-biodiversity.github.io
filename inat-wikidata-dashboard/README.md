@@ -521,7 +521,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     second, disagreeing value would create a conflict, not fix one. This also naturally
     catches ancestors that were already sitting on Wikidata unlinked, not just ones phase
     one just created.
-15. **Bulk GBIF cross-check** — Step 7 of the main run (`resolveGbifCrossCheck()`), batching
+15. **Bulk GBIF cross-check** — the last stage of the main run (`resolveGbifCrossCheck()`), batching
     items 12's two checks across every currently loaded taxon at once — VALUES lists
     instead of one request per taxon, the same way the rest of the pipeline batches
     Wikidata — rather than the one-taxon-at-a-time queries the curation page's own panel
@@ -618,8 +618,48 @@ scrolling panel — each step logs one aggregate line (batches, items, rows, ela
 rather than one line per batch, so a large project (hundreds of taxa, dozens of batches
 per step) doesn't turn it into an unscrollable wall of near-identical text.
 
+**Making a run faster** — a run used to be seven strictly sequential steps end to end,
+even though most of them never actually depended on each other; they only ever ran one
+after another because that's how this was first written, not because anything required
+it. Reported taking up to an hour on a large project. Restructured into 4 stages
+(`runFresh()`), running whatever's genuinely independent within a stage concurrently
+instead — each check still talks to its own endpoint exactly as it did before, only how
+many run at once has changed:
+- Stage 2: Wikidata, Plazi TreatmentBank, and Commons all only need this run's own
+  fetched taxa/photos, not each other.
+- Stage 3: Wikipedia sitelinks and Wikidata image (`P18`) coverage both only need stage
+  2's Wikidata match, not each other.
+- Inside the GBIF cross-check itself (stage 4), "Wikidata classification" and the
+  taxonomic-rank-items lookup only need taxa's already-resolved `t.wikidata` — nothing
+  the usage → synonyms → synonym-Wikidata-lookup → sitelinks chain that makes up the
+  rest of that function computes — so they're kicked off at the very start of the
+  function and awaited only once actually needed, running alongside that chain instead
+  of strictly before it.
+
+  That chain itself (usage lookup → synonyms → Wikidata lookup for the resulting synonym
+  names → sitelinks for those items) stays sequential: each step's *input* is the
+  *previous* step's actual result, not just the same taxa list, so there's nothing safe
+  to parallelize there without restructuring the underlying GBIF calls themselves. Found
+  live testing a 67-observation project: this chain — worsened by a couple of 15-second
+  timeouts against live QLever/WDQS — was consistently the largest single contributor to
+  total run time, well ahead of anything the parallelization above touches.
+- `fetchScopedTaxa()`'s own observation paging used to fetch one page at a time, waiting
+  on each before requesting the next, even though iNaturalist's page-based pagination
+  (as opposed to its id-cursor pagination) addresses pages directly by number, up to its
+  own 10,000-result ceiling — `MAX_OBSERVATIONS` (5000) stays comfortably under that.
+  Page 1 already reports the total result count, so every page after it is now fetched
+  with bounded concurrency (4 at a time) instead of one after another.
+
+None of this changes what any individual check does or how it talks to its own endpoint —
+only how many independent things run at once. Verified live (same 67-observation project,
+before/after): total run time dropped from about two minutes to about 27 seconds, though
+part of that gap reflects live endpoint response-time variance between the two runs (the
+slower one hit two 15-second timeouts the faster one didn't reproduce) rather than being
+purely architectural — the concurrency itself is directly confirmed by near-identical
+per-stage timestamps in the run log, not just the total.
+
 **Resuming a run** — a project or user with thousands of observations can take a genuinely
-long time to work through all 7 steps, and losing that to a closed tab (or just wanting to
+long time to work through, and losing that to a closed tab (or just wanting to
 pick up a run after an app.js update) meant starting over from zero every time. A completed
 run is now auto-saved to this browser's `localStorage`, keyed by exact scope
 (`runCacheKey()` — project/user/taxon/OSM-area, case-insensitive), including after the
@@ -715,8 +755,8 @@ report. Replaced with:
   tool successfully handling a slow/rate-limited public endpoint, not something broken.
   Red (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
   upfront "the whole run will take N minutes" estimate would just be a guess dressed up
-  as a number. Instead the status header shows which of the 7 pipeline steps is current
-  (`Step 3/7: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
+  as a number. Instead the status header shows which of the 4 pipeline stages is current
+  (`Stage 3/4: …`) plus, for whichever check is mid-batch, a live `batch 12/58 (~1m 40s
   remaining)` extrapolated from that step's own pace so far (`runBatchedStep`) — it
   self-corrects as the step runs rather than committing to a number before the step's
   actual speed (QLever-fast or WDQS-slow) is even known.
