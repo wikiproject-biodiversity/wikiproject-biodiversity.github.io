@@ -2605,6 +2605,21 @@ function buildInatIdLinkQS(t) {
   return `${t.wikidata.qid}\tP3151\t${qsString(String(t.inatId))}\tS248\t${QS_REF_INATURALIST}`;
 }
 
+// The other half of the "no image" flag: the matched item has no P18 at all (checked by
+// resolveWikidataImages), AND this run already knows a Commons filename to point it at —
+// either this run's own observation photo, already confirmed on Commons
+// (resolveCommonsStatus), or a curator's explicit pick from the image selector
+// (t._selectedImage, via commonsImageFilename()). A taxon whose photo isn't on Commons
+// yet needs "prepare upload" first — this deliberately doesn't offer to link a filename
+// that doesn't exist yet.
+function needsWikidataImageLink(t) {
+  return !!t.wikidata && !t.wikidataAmbiguous && !!t.wikidataNoImage && !!commonsImageFilename(t);
+}
+
+function buildWikidataImageLinkQS(t) {
+  return `${t.wikidata.qid}\tP18\t${qsString(commonsImageFilename(t))}\tS248\t${QS_REF_INATURALIST}`;
+}
+
 async function buildQuickStatements(t) {
   const ctx = await ensureQuickStatementsContext(t);
   const rankQid = ctx.rankQids.get((t.rank || '').toLowerCase());
@@ -2850,6 +2865,10 @@ const bulkCreateBox = document.getElementById('bulkCreateBox');
 const bulkCreateWarning = document.getElementById('bulkCreateWarning');
 const bulkCreateTextarea = document.getElementById('bulkCreateTextarea');
 const bulkCreateCopyBtn = document.getElementById('bulkCreateCopyBtn');
+const bulkImageLinkBtn = document.getElementById('bulkImageLinkBtn');
+const bulkImageLinkBox = document.getElementById('bulkImageLinkBox');
+const bulkImageLinkTextarea = document.getElementById('bulkImageLinkTextarea');
+const bulkImageLinkCopyBtn = document.getElementById('bulkImageLinkCopyBtn');
 const resumePromptEl = document.getElementById('resumePrompt');
 const resumePromptText = document.getElementById('resumePromptText');
 const resumeBtn = document.getElementById('resumeBtn');
@@ -3294,7 +3313,10 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   // ID" pill above: an ambiguous match means this tool isn't sure `t.wikidata` is even the
   // right item, so flagging ITS image coverage would point a curator at the wrong item.
   const noImageBadge = t.wikidata && !t.wikidataAmbiguous && t.wikidataNoImage
-    ? ` <span class="pill" title="${t.wikidata.qid} has no image (P18) statement at all">⚠ no image</span>`
+    ? ` <span class="pill" title="${t.wikidata.qid} has no image (P18) statement at all">⚠ no image</span>` +
+      (needsWikidataImageLink(t)
+        ? ` <button class="small-btn imagelink-btn" data-inat-id="${t.inatId}">propose adding it</button>`
+        : '')
     : '';
   const wd = (!t.wikidata
     ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
@@ -4396,6 +4418,38 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.imagelink-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t || !needsWikidataImageLink(t)) return;
+
+  const row = btn.closest('tr');
+  const qsRow = row.nextElementSibling;
+  if (qsRow && qsRow.classList.contains('qs-row')) {
+    qsRow.remove();
+    return;
+  }
+
+  const filename = commonsImageFilename(t);
+  const commands = buildWikidataImageLinkQS(t);
+  const rowId = `imagelink-${inatId}-${Date.now()}`;
+  const box = document.createElement('tr');
+  box.className = 'bhl-row qs-row';
+  box.innerHTML = `<td></td><td colspan="12">
+    Proposed QuickStatements to add
+    <a href="https://commons.wikimedia.org/wiki/File:${encodeURIComponent(filename)}" target="_blank" rel="noopener">${escapeHtml(filename)}</a>
+    as the image (<code>P18</code>) on <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a> for <em>${t.name}</em>.
+    <div class="stub-toolbar">
+      <button class="small-btn copy-stub-btn" data-target="${rowId}">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>
+  </td>`;
+  row.after(box);
+});
+
+document.addEventListener('click', (e) => {
   const btn = e.target.closest('.copy-stub-btn');
   if (!btn) return;
   const ta = document.getElementById(btn.dataset.target);
@@ -4502,6 +4556,25 @@ bulkCreateCopyBtn.addEventListener('click', () => {
     setTimeout(() => { bulkCreateCopyBtn.textContent = original; }, 1500);
   }).catch(() => {
     bulkCreateTextarea.select();
+  });
+});
+
+bulkImageLinkBtn.addEventListener('click', () => {
+  if (!bulkImageLinkBox.hidden) {
+    bulkImageLinkBox.hidden = true;
+    return;
+  }
+  bulkImageLinkTextarea.value = buildBulkWikidataImageLinkQS(currentTaxa.filter(needsWikidataImageLink));
+  bulkImageLinkBox.hidden = false;
+});
+
+bulkImageLinkCopyBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(bulkImageLinkTextarea.value).then(() => {
+    const original = bulkImageLinkCopyBtn.textContent;
+    bulkImageLinkCopyBtn.textContent = 'Copied!';
+    setTimeout(() => { bulkImageLinkCopyBtn.textContent = original; }, 1500);
+  }).catch(() => {
+    bulkImageLinkTextarea.select();
   });
 });
 
@@ -4650,6 +4723,7 @@ function updateStats() {
   const inatIdMissingCount = currentTaxa.filter(inatIdMissing).length;
   const inatIdConflict = currentTaxa.filter(t => t.wikidataInatIdConflict).length;
   const noImageCount = currentTaxa.filter(noImageOnWikidata).length;
+  const imageLinkCount = currentTaxa.filter(needsWikidataImageLink).length;
   const unresolvedCount = currentTaxa.filter(t => !t.wikidata).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
@@ -4659,7 +4733,7 @@ function updateStats() {
   document.getElementById('statInatIdConflict').textContent = inatIdConflict;
   document.getElementById('statNoImage').textContent = noImageCount;
   statsEl.hidden = false;
-  updateBulkActions(inatIdMissingCount, unresolvedCount);
+  updateBulkActions(inatIdMissingCount, unresolvedCount, imageLinkCount);
 
   // Only meaningful once the GBIF cross-check has actually run (step 6 of run(), or — if
   // that step itself failed — never) — the stat cards and filter buttons stay hidden until
@@ -4722,10 +4796,17 @@ async function buildBulkCreateQS(taxa, onProgress) {
   return { commands: blocks.filter(Boolean).join('\n'), failures };
 }
 
-function updateBulkActions(inatIdMissingCount, unresolvedCount) {
+// Same synchronous map+join as buildBulkInatIdLinkQS — every input here (t.wikidata.qid,
+// the Commons filename) is already known, no network calls needed, unlike the CREATE batch.
+function buildBulkWikidataImageLinkQS(taxa) {
+  return taxa.map(buildWikidataImageLinkQS).join('\n');
+}
+
+function updateBulkActions(inatIdMissingCount, unresolvedCount, imageLinkCount) {
   bulkInatIdBox.hidden = true;
   bulkCreateBox.hidden = true;
-  bulkActionsEl.hidden = !inatIdMissingCount && !unresolvedCount;
+  bulkImageLinkBox.hidden = true;
+  bulkActionsEl.hidden = !inatIdMissingCount && !unresolvedCount && !imageLinkCount;
   bulkInatIdBtn.hidden = !inatIdMissingCount;
   if (inatIdMissingCount) {
     bulkInatIdBtn.textContent = `Propose QuickStatements — link all ${inatIdMissingCount} missing iNat ID${inatIdMissingCount === 1 ? '' : 's'}`;
@@ -4733,6 +4814,10 @@ function updateBulkActions(inatIdMissingCount, unresolvedCount) {
   bulkCreateBtn.hidden = !unresolvedCount;
   if (unresolvedCount) {
     bulkCreateBtn.textContent = `Propose QuickStatements — create all ${unresolvedCount} new Wikidata item${unresolvedCount === 1 ? '' : 's'}`;
+  }
+  bulkImageLinkBtn.hidden = !imageLinkCount;
+  if (imageLinkCount) {
+    bulkImageLinkBtn.textContent = `Propose QuickStatements — add image to all ${imageLinkCount} item${imageLinkCount === 1 ? '' : 's'} missing one`;
   }
 }
 
@@ -4843,6 +4928,7 @@ function resetRunUI() {
   bulkActionsEl.hidden = true;
   bulkInatIdBox.hidden = true;
   bulkCreateBox.hidden = true;
+  bulkImageLinkBox.hidden = true;
   taxonDetailEl.hidden = true;
   statSynonymDuplicateCard.hidden = true;
   statWikidataMismatchCard.hidden = true;
