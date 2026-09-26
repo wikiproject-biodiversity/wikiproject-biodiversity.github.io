@@ -185,7 +185,20 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    (`?utm_source=commons.wikimedia.org&…`) after the real filename — `commonsFilenameFromUrl()`
    strips it before use; missing that produced a broken file link (found live, while building
    the image picker below, and fixed everywhere in this file that parses a `contentUrl`).
-7. **Upload to Commons (on demand)** — for a compatible, not-yet-uploaded photo, opens a
+7. **Comunica → Wikidata image (`P18`) coverage (QLever, WDQS fallback)** —
+   `resolveWikidataImages()`, batched over every resolved item, checks whether it has *any*
+   `wdt:P18` statement at all. Distinct from the Commons duplicate-check above: a taxon can be
+   missing `P18` even with a perfectly good Commons-ready photo sitting right there in the
+   Image column — the two checks answer different questions (does Wikidata already know about
+   *a* picture, vs. is *this run's* specific photo already uploaded). Same "trust a match,
+   re-check a miss" QLever-then-WDQS staleness handling as the sitelinks check above, for the
+   same reason — a false "no image" is the wrong direction to be wrong in for something a
+   curator might act on. Flagged with a "⚠ no image" pill (WD column), its own stat card and
+   filter ("WD item, no image"); suppressed on an ambiguous match, same reasoning as the "no
+   iNat ID" pill — `t.wikidata` there is only a best guess, so flagging *its* image coverage
+   risks pointing at the wrong item's gap entirely. "↻ Refresh from Wikidata" re-checks this
+   live too, alongside the match and sitelinks it already refreshed.
+8. **Upload to Commons (on demand)** — for a compatible, not-yet-uploaded photo, opens a
    pre-filled `Special:Upload` form using upload-by-URL: `wpUploadFileURL` set to the iNaturalist
    photo, `wpLicense`/`wpDestFile`/`wpUploadDescription` pre-filled from the same data as the
    wikitext preview. This is the same mechanism (no OAuth, no backend) as
@@ -195,7 +208,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    showing the button. iNaturalist's photo host (`inaturalist-open-data.s3.amazonaws.com`) is on
    that list today. You still need your own Wikimedia account and click "Upload file" on Commons
    yourself — nothing is uploaded automatically by this page.
-8. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es/pt columns.
+9. **Draft a Wikipedia stub (on demand)** — click any red ✗ in the en/ja/es/pt columns.
    In the spirit of
    [taxonname-wpstubmaker](https://github.com/wikiproject-biodiversity/taxonname-wpstubmaker),
    it fetches the taxon's ancestor chain from iNaturalist and authorship/publication
@@ -262,7 +275,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
      `Author, Year` (`parseAuthority()`) — cited to GBIF's own `publishedIn` (the original
      describing publication) when available, since that's the actual source for this specific
      claim, not the generic lead sentence it used to be attached to.
-9. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
+10. **Propose QuickStatements (on demand)** — for a taxon with no Wikidata item (`t.wikidata ===
    null`), click "propose QuickStatements" to draft a
    [QuickStatements](https://quickstatements.toolforge.org/) v1 batch that would `CREATE` one:
    - `P31` taxon (this tool's own modelling choice, not a fact any linked database asserts, so
@@ -317,7 +330,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    it runs with bounded concurrency (4 at a time, not the whole list at once, which would look
    like a burst to more than one public API) and skips (with a note, not silently) any single
    taxon whose draft fails to build rather than losing the whole batch.
-10. **Is the project/user itself on Wikidata?** — a separate identity panel, unrelated to the
+11. **Is the project/user itself on Wikidata?** — a separate identity panel, unrelated to the
     per-taxon logic above, runs automatically (concurrently with the taxa pipeline) for whatever
     scope you entered:
     - **User**: checked against `P12022` (iNaturalist user ID) — values in the wild are a mix of
@@ -335,7 +348,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       item (`mode: 'create'` — `P31 Q5` human / `Q24577212` citizen science project). A new-human
       draft carries an explicit notability caution in its UI label: contributing to iNaturalist
       does not by itself make a person notable enough for a standalone Wikidata item.
-11. **Per-taxon curation page** — click a taxon's name (in the table, or via
+12. **Per-taxon curation page** — click a taxon's name (in the table, or via
     `#taxon=<inatId>` directly — a real, bookmarkable URL hash) to open a single-taxon
     view with every outstanding action for it already built and shown, not click-to-reveal
     like the table (`renderTaxonDetail()`). Whichever single Wikidata action applies —
@@ -371,7 +384,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     too and re-renders the whole page — so a curator can create an item, wait for it to
     land, refresh, and immediately see (and act on) whatever the *next* gap is, without
     reloading the whole project/user and losing their place in it.
-12. **Synonymy & homonymy** — a panel on the curation page (`buildSynonymyInfo()`,
+13. **Synonymy & homonymy** — a panel on the curation page (`buildSynonymyInfo()`,
     `synonymyPanel()`), on-demand and per-taxon only; the lookups below don't scale to a
     batch of hundreds the way the rest of the pipeline does. RDF end to end, same
     federation spirit as everywhere else in this tool: GBIF's own SPARQL mirror on QLever
@@ -452,7 +465,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       as the likely correct one — an unrelated homonym from a different kingdom won't
       match within three hops at all. Advisory only, shown to the curator; never changes
       `t.wikidata` automatically.
-13. **Taxonomic tree** — another curation-page panel (`buildTaxonomicTreeInfo()`,
+14. **Taxonomic tree** — another curation-page panel (`buildTaxonomicTreeInfo()`,
     `taxonomicTreePanel()`), the taxon's whole ancestor lineage in one table: every rank
     iNaturalist tracks for it (`ctx.detail.ancestors`, already fetched for the ancestry
     breadcrumb — not just the 7 coarse ranks `compareTaxonomySources` uses, so a "tribe" or
@@ -485,7 +498,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     second, disagreeing value would create a conflict, not fix one. This also naturally
     catches ancestors that were already sitting on Wikidata unlinked, not just ones phase
     one just created.
-14. **Bulk GBIF cross-check** — Step 6 of the main run (`resolveGbifCrossCheck()`), batching
+15. **Bulk GBIF cross-check** — Step 7 of the main run (`resolveGbifCrossCheck()`), batching
     items 12's two checks across every currently loaded taxon at once — VALUES lists
     instead of one request per taxon, the same way the rest of the pipeline batches
     Wikidata — rather than the one-taxon-at-a-time queries the curation page's own panel
@@ -549,7 +562,7 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       wrong genus. Both now prefer whichever row is itself the accepted usage
       (`taxonomicStatus`/absence of `acceptedNameUsage`) when a name matches more than one
       GBIF record, verified against these exact rows.
-15. **Article quality check (opt-in)** — a "Check article quality" button
+16. **Article quality check (opt-in)** — a "Check article quality" button
     (`resolveArticleQuality()`), requested by an editathon organiser who wanted to send
     volunteers at existing-but-thin articles too, not just missing ones. For every taxon
     that already has a confirmed article in one of the 4 tracked languages, fetches that
@@ -582,7 +595,7 @@ rather than one line per batch, so a large project (hundreds of taxa, dozens of 
 per step) doesn't turn it into an unscrollable wall of near-identical text.
 
 **Resuming a run** — a project or user with thousands of observations can take a genuinely
-long time to work through all 6 steps, and losing that to a closed tab (or just wanting to
+long time to work through all 7 steps, and losing that to a closed tab (or just wanting to
 pick up a run after an app.js update) meant starting over from zero every time. A completed
 run is now auto-saved to this browser's `localStorage`, keyed by exact scope
 (`runCacheKey()` — project/user/taxon/OSM-area, case-insensitive), including after the
@@ -649,8 +662,8 @@ failing the run itself.
   tool successfully handling a slow/rate-limited public endpoint, not something broken.
   Red (`log(msg, 'err')`) is reserved for the run actually aborting. Given all that, a single
   upfront "the whole run will take N minutes" estimate would just be a guess dressed up
-  as a number. Instead the status header shows which of the 6 pipeline steps is current
-  (`Step 3/6: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
+  as a number. Instead the status header shows which of the 7 pipeline steps is current
+  (`Step 3/7: …`) plus, for whichever step is mid-batch, a live `batch 12/58 (~1m 40s
   remaining)` extrapolated from that step's own pace so far (`runBatchedStep`) — it
   self-corrects as the step runs rather than committing to a number before the step's
   actual speed (QLever-fast or WDQS-slow) is even known.
