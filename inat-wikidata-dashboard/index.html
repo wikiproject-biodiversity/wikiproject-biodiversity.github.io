@@ -69,12 +69,6 @@
   <div class="stat"><span id="statResolved">0</span><label>matched in Wikidata</label></div>
   <div class="stat warn"><span id="statMissingAny">0</span><label>missing ≥1 Wikipedia</label></div>
   <div class="stat danger"><span id="statMissingAll">0</span><label>missing en+ja+es+pt</label></div>
-  <div class="stat warn"><span id="statInatIdMissing">0</span><label>WD item missing iNat ID</label></div>
-  <div class="stat danger"><span id="statInatIdConflict">0</span><label>WD item has 2+ iNat IDs</label></div>
-  <div class="stat warn"><span id="statNoImage">0</span><label>WD item, no image</label></div>
-  <div class="stat warn" id="statSynonymDuplicateCard" hidden><span id="statSynonymDuplicate">0</span><label>multiple WP via synonymy</label></div>
-  <div class="stat danger" id="statWikidataMismatchCard" hidden><span id="statWikidataMismatch">0</span><label>WD classification vs GBIF</label></div>
-  <div class="stat warn" id="statStubArticleCard" hidden><span id="statStubArticle">0</span><label>stub-sized article</label></div>
 </section>
 
 <section id="filters" class="filters" hidden>
@@ -82,12 +76,18 @@
   <button class="filter-btn" data-filter="missing-any">Missing ≥1 Wikipedia</button>
   <button class="filter-btn" data-filter="missing-all">Missing all 4</button>
   <button class="filter-btn" data-filter="unresolved">Not found in Wikidata</button>
-  <button class="filter-btn" data-filter="inat-id-missing">WD item, no iNat ID</button>
-  <button class="filter-btn" data-filter="inat-id-conflict">WD item, 2+ iNat IDs</button>
-  <button class="filter-btn" data-filter="no-image">WD item, no image</button>
-  <button class="filter-btn" data-filter="synonym-duplicate" id="synonymFilterBtn" hidden>Multiple WP (synonymy)</button>
-  <button class="filter-btn" data-filter="wikidata-gbif-mismatch" id="wikidataMismatchFilterBtn" hidden>WD needs curation (vs GBIF)</button>
-  <button class="filter-btn" data-filter="stub-article" id="stubArticleFilterBtn" hidden>Stub-sized article</button>
+
+  <details id="issuesDetails" class="issues-details">
+    <summary id="issuesSummary">0 taxa need attention</summary>
+    <div class="issues-list">
+      <button class="filter-btn issue-row" data-filter="inat-id-missing"><span class="issue-row-count warn" id="statInatIdMissing">0</span>WD item, no iNat ID</button>
+      <button class="filter-btn issue-row" data-filter="inat-id-conflict"><span class="issue-row-count danger" id="statInatIdConflict">0</span>WD item, 2+ iNat IDs</button>
+      <button class="filter-btn issue-row" data-filter="no-image"><span class="issue-row-count warn" id="statNoImage">0</span>WD item, no image</button>
+      <button class="filter-btn issue-row" data-filter="synonym-duplicate" id="synonymFilterBtn" hidden><span class="issue-row-count warn" id="statSynonymDuplicate">0</span>Multiple WP (synonymy)</button>
+      <button class="filter-btn issue-row" data-filter="wikidata-gbif-mismatch" id="wikidataMismatchFilterBtn" hidden><span class="issue-row-count danger" id="statWikidataMismatch">0</span>WD needs curation (vs GBIF)</button>
+      <button class="filter-btn issue-row" data-filter="stub-article" id="stubArticleFilterBtn" hidden><span class="issue-row-count warn" id="statStubArticle">0</span>Stub-sized article</button>
+    </div>
+  </details>
 </section>
 
 <section id="articleQualitySection" class="identity-panel" hidden>
