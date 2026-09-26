@@ -95,6 +95,7 @@
 <section id="bulkActions" class="identity-panel" hidden>
   <div class="identity-row">
     <button id="bulkInatIdBtn" class="small-btn upload-btn"></button>
+    <button id="bulkCreateBtn" class="small-btn upload-btn"></button>
   </div>
   <div id="bulkInatIdBox" hidden>
     <p class="identity-note">Proposed QuickStatements to add the iNaturalist taxon id to every matched item below that's missing one — review before running, same as any other batch edit.</p>
@@ -103,6 +104,15 @@
       <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
     </div>
     <textarea id="bulkInatIdTextarea" class="stub-textarea" readonly spellcheck="false"></textarea>
+  </div>
+  <div id="bulkCreateBox" hidden>
+    <p class="identity-note">Proposed QuickStatements to create a Wikidata item for every taxon below with no match at all — one <code>CREATE</code> block per taxon, each assembled the same way as its own "propose QuickStatements" button. Review carefully before running: this is a draft, not checked for existing near-duplicates beyond the exact name match already shown in each row.</p>
+    <p id="bulkCreateWarning" class="identity-note" hidden></p>
+    <div class="stub-toolbar">
+      <button id="bulkCreateCopyBtn" class="small-btn">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="bulkCreateTextarea" class="stub-textarea" readonly spellcheck="false"></textarea>
   </div>
 </section>
 
