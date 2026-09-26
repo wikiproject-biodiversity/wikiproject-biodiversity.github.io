@@ -198,6 +198,18 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    iNat ID" pill — `t.wikidata` there is only a best guess, so flagging *its* image coverage
    risks pointing at the wrong item's gap entirely. "↻ Refresh from Wikidata" re-checks this
    live too, alongside the match and sitelinks it already refreshed.
+
+   Missing an image is only half the gap — the other half is whether this run already knows
+   a filename to fill it with. `needsWikidataImageLink()` additionally requires
+   `commonsImageFilename(t)` to resolve to something: this run's own observation photo,
+   already confirmed on Commons (`resolveCommonsStatus`, above), or a curator's explicit pick
+   from the image selector (`t._selectedImage`). When both hold, the "no image" pill gets a
+   "propose adding it" button (`buildWikidataImageLinkQS()` — a single `P18` addition,
+   referenced to iNaturalist as the source of the photo, same pattern as the `P3151` link
+   action) plus, same as every other per-row fix in this table, a bulk "add image to all N
+   items missing one" batch. A taxon whose photo isn't on Commons yet doesn't get either
+   button — "prepare upload" (below) has to happen first; this deliberately never proposes
+   linking a filename that doesn't exist.
 8. **Upload to Commons (on demand)** — for a compatible, not-yet-uploaded photo, opens a
    pre-filled `Special:Upload` form using upload-by-URL: `wpUploadFileURL` set to the iNaturalist
    photo, `wpLicense`/`wpDestFile`/`wpUploadDescription` pre-filled from the same data as the
