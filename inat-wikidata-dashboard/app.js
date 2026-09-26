@@ -589,8 +589,16 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
     const langs = {};
     for (const l of LANGS) langs[l.code] = (siteRows[0] && siteRows[0][`article_${l.code}`]) || null;
     t.wikipedia = langs;
+
+    const imageRows = await sparqlViaComunica(
+      `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT ?image WHERE { wd:${t.wikidata.qid} wdt:P18 ?image } LIMIT 1`,
+      WDQS_ENDPOINT, { silent: true, retries: 1, label: `Live image (P18) refresh for ${t.wikidata.qid}` }
+    );
+    t.wikidataNoImage = imageRows.length === 0;
   } else {
     t.wikipedia = Object.fromEntries(LANGS.map(l => [l.code, null]));
+    t.wikidataNoImage = false;
   }
 
   delete t._stubContext;
@@ -904,6 +912,48 @@ SELECT ?url ?file ?contentUrl WHERE {
   for (const t of candidates) {
     t.obsPhoto.commonsFile = existing.get(t.obsPhoto.inatPhotoUrl) || null;
   }
+  return taxa;
+}
+
+// Batched wdt:P18 existence check for every resolved item — "does Wikidata have a
+// picture of this taxon at all", not to be confused with resolveCommonsStatus above
+// (which only checks whether THIS run's own observation photo specifically is already
+// on Commons). A taxon can be missing P18 even with a perfectly good Commons-ready photo
+// sitting right there in the Image column — that gap is what this flags.
+async function resolveWikidataImages(taxa) {
+  const withWd = taxa.filter(t => t.wikidata);
+  if (!withWd.length) return taxa;
+  const hasImage = new Set();
+  const imageQuery = (values) => `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT DISTINCT ?wdTaxon WHERE { VALUES ?wdTaxon { ${values} } ?wdTaxon wdt:P18 ?image }`;
+
+  await runBatchedStep(withWd, 'Wikidata image (P18) coverage', async (batch) => {
+    const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
+    const rows = await sparqlViaComunica(imageQuery(values), QLEVER_ENDPOINT, { silent: true });
+    for (const r of rows) hasImage.add(r.wdTaxon.split('/').pop());
+    return rows.length;
+  });
+
+  // Same "trust a match, re-check a miss" staleness rule as every other bulk check here —
+  // QLever's periodic dump could simply be missing an image added since its last refresh,
+  // and mistaking that for "no image at all" is the wrong direction to be wrong in for
+  // something a curator might act on (uploading a needless duplicate).
+  const toRecheck = withWd.filter(t => !hasImage.has(t.wikidata.qid));
+  if (toRecheck.length) {
+    try {
+      await runBatchedStep(toRecheck, 'Wikidata image (P18) — re-checking QLever misses against live WDQS', async (batch) => {
+        const values = batch.map(t => `wd:${t.wikidata.qid}`).join(' ');
+        const rows = await sparqlViaComunica(imageQuery(values), WDQS_ENDPOINT, { silent: true, retries: 1 });
+        for (const r of rows) hasImage.add(r.wdTaxon.split('/').pop());
+        return rows.length;
+      }, WDQS_BATCH_SIZE);
+    } catch (e) {
+      log(`WDQS re-check failed (${e.message}) — keeping QLever's answer for ${toRecheck.length} taxa as-is`, 'warn');
+    }
+  }
+
+  for (const t of withWd) t.wikidataNoImage = !hasImage.has(t.wikidata.qid);
   return taxa;
 }
 
@@ -3127,11 +3177,19 @@ function inatIdMissing(t) {
   return !!t.wikidata && !t.wikidataAmbiguous && !t.wikidataInatIdConflict && !inatIdLinked(t);
 }
 
+// Same ambiguous-match exclusion as inatIdMissing above and the badge that uses this —
+// an ambiguous match means t.wikidata is only a best guess, so flagging ITS image
+// coverage risks pointing a curator at completely the wrong item's gap.
+function noImageOnWikidata(t) {
+  return !!t.wikidata && !t.wikidataAmbiguous && !!t.wikidataNoImage;
+}
+
 function matchesFilter(t) {
   if (currentFilter === 'all') return true;
   if (currentFilter === 'unresolved') return !t.wikidata;
   if (currentFilter === 'inat-id-missing') return inatIdMissing(t);
   if (currentFilter === 'inat-id-conflict') return !!t.wikidataInatIdConflict;
+  if (currentFilter === 'no-image') return noImageOnWikidata(t);
   if (currentFilter === 'synonym-duplicate') return !!t.hasSynonymDuplication;
   if (currentFilter === 'wikidata-gbif-mismatch') return !!t.wikidataGbifMismatch;
   if (currentFilter === 'stub-article') return !!t.hasStubArticle;
@@ -3232,6 +3290,12 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
   const gbifMismatchBadge = t.wikidataGbifMismatch
     ? ` <button class="small-btn gbifmismatch-btn" data-inat-id="${t.inatId}">⚠ needs curation (vs GBIF)</button>`
     : '';
+  // Only shown once the item itself is confidently known — same reasoning as the "no iNat
+  // ID" pill above: an ambiguous match means this tool isn't sure `t.wikidata` is even the
+  // right item, so flagging ITS image coverage would point a curator at the wrong item.
+  const noImageBadge = t.wikidata && !t.wikidataAmbiguous && t.wikidataNoImage
+    ? ` <span class="pill" title="${t.wikidata.qid} has no image (P18) statement at all">⚠ no image</span>`
+    : '';
   const wd = (!t.wikidata
     ? `<span class="pill">not found</span> <button class="small-btn qs-btn" data-inat-id="${t.inatId}">propose QuickStatements</button>`
     : t.wikidataInatIdConflict
@@ -3245,7 +3309,7 @@ function buildTaxonRowCells(t, { linkName = false } = {}) {
         : t.wikidataAmbiguous
           ? `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId} — but resolve the ambiguous match first, this tool isn't sure this is even the right item">⚠ no iNat ID</span>`
           : `${wdLink} <span class="pill" title="This item has no iNaturalist taxon id (P3151) pointing back at ${t.inatId}">⚠ no iNat ID</span> <button class="small-btn inatlink-btn" data-inat-id="${t.inatId}">link iNat ID</button>`
-  ) + gbifMismatchBadge;
+  ) + gbifMismatchBadge + noImageBadge;
   const gbif = t.wikidata && t.wikidata.gbif
     ? `<a href="https://www.gbif.org/species/${t.wikidata.gbif}" target="_blank" rel="noopener">${t.wikidata.gbif}</a>`
     : '<span class="pill">—</span>';
@@ -4585,6 +4649,7 @@ function updateStats() {
   const missingAll = currentTaxa.filter(t => taxonMissingCount(t) === LANGS.length).length;
   const inatIdMissingCount = currentTaxa.filter(inatIdMissing).length;
   const inatIdConflict = currentTaxa.filter(t => t.wikidataInatIdConflict).length;
+  const noImageCount = currentTaxa.filter(noImageOnWikidata).length;
   const unresolvedCount = currentTaxa.filter(t => !t.wikidata).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
@@ -4592,6 +4657,7 @@ function updateStats() {
   document.getElementById('statMissingAll').textContent = missingAll;
   document.getElementById('statInatIdMissing').textContent = inatIdMissingCount;
   document.getElementById('statInatIdConflict').textContent = inatIdConflict;
+  document.getElementById('statNoImage').textContent = noImageCount;
   statsEl.hidden = false;
   updateBulkActions(inatIdMissingCount, unresolvedCount);
 
@@ -4812,7 +4878,7 @@ async function runFresh(scopeType, scopeValue, osmRadiusKm) {
   // A step count the user can see progress against, however imprecise any single step's
   // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
   // isn't knowable until it's running (see runBatchedStep's live ETA for that part).
-  const TOTAL_STEPS = 6;
+  const TOTAL_STEPS = 7;
   const step = (n, label) => `Step ${n}/${TOTAL_STEPS}: ${label}`;
 
   try {
@@ -4834,11 +4900,14 @@ async function runFresh(scopeType, scopeValue, osmRadiusKm) {
     setStatusHeader(step(5, `Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`));
     await resolveCommonsStatus(taxa);
 
+    setStatusHeader(step(6, `Checking Wikidata image (P18) coverage (via Comunica → QLever)…`));
+    await resolveWikidataImages(taxa);
+
     // Used to be its own opt-in "Cross-check against GBIF" button — always clicked in
     // practice, so it's just part of the run now. Its own failure shouldn't sink an
     // otherwise-successful run (GBIF's mirror is one more public endpoint this tool
     // doesn't control), so it's wrapped separately rather than left in the outer try.
-    setStatusHeader(step(6, `Cross-checking against GBIF (synonymy + classification)…`));
+    setStatusHeader(step(7, `Cross-checking against GBIF (synonymy + classification)…`));
     try {
       await resolveGbifCrossCheck(taxa);
       gbifCrossCheckDone = true;
