@@ -592,7 +592,7 @@ SELECT ?taxonLabel ?wdTaxon ?gbif ?inat ?commonsCat WHERE {
 
     const imageRows = await sparqlViaComunica(
       `PREFIX wdt: <http://www.wikidata.org/prop/direct/>
-SELECT ?image WHERE { wd:${t.wikidata.qid} wdt:P18 ?image } LIMIT 1`,
+SELECT ?image WHERE { <https://www.wikidata.org/entity/${t.wikidata.qid}> wdt:P18 ?image } LIMIT 1`,
       WDQS_ENDPOINT, { silent: true, retries: 1, label: `Live image (P18) refresh for ${t.wikidata.qid}` }
     );
     t.wikidataNoImage = imageRows.length === 0;
@@ -913,6 +913,31 @@ SELECT ?url ?file ?contentUrl WHERE {
     t.obsPhoto.commonsFile = existing.get(t.obsPhoto.inatPhotoUrl) || null;
   }
   return taxa;
+}
+
+// Single-taxon, on-demand version of the batch check above — the other half of "upload,
+// then add to Wikidata" being one smooth flow instead of two disconnected ones: after
+// "prepare upload" (below), a curator can check right there whether the file has landed
+// on Commons yet, without waiting for (or triggering) a full pipeline re-run. QLever's
+// Commons mirror is itself periodically refreshed, so "not found yet" here can mean
+// "give it a few minutes" as much as "genuinely not uploaded" — the caller's own message
+// says as much rather than reading as a flat no.
+async function checkCommonsUploadStatus(t) {
+  const query = `PREFIX p: <http://www.wikidata.org/prop/>
+PREFIX pq: <http://www.wikidata.org/prop/qualifier/>
+PREFIX schema: <http://schema.org/>
+SELECT ?file ?contentUrl WHERE {
+  ?file p:P7482 ?stmt ; schema:contentUrl ?contentUrl .
+  ?stmt pq:P973 <${t.obsPhoto.inatPhotoUrl}> .
+} LIMIT 1`;
+  const rows = await sparqlViaComunica(query, COMMONS_ENDPOINT, { silent: true, retries: 1, label: `Live Commons check for ${t.name}` });
+  if (!rows.length) {
+    t.obsPhoto.commonsFile = null;
+    return false;
+  }
+  const filename = commonsFilenameFromUrl(rows[0].contentUrl);
+  t.obsPhoto.commonsFile = { entity: rows[0].file, pageUrl: `https://commons.wikimedia.org/wiki/File:${filename}` };
+  return true;
 }
 
 // Batched wdt:P18 existence check for every resolved item — "does Wikidata have a
@@ -4307,6 +4332,7 @@ document.addEventListener('click', (e) => {
   const uploadUrl = buildCommonsUploadUrl(t);
   const rowId = `upload-${inatId}-${Date.now()}`;
   const domainId = `domstatus-${inatId}-${Date.now()}`;
+  const checkStatusId = `commonscheck-${inatId}-${Date.now()}`;
   const host = new URL(t.obsPhoto.originalUrl).hostname;
   const box = document.createElement('tr');
   box.className = 'bhl-row upload-row';
@@ -4325,6 +4351,10 @@ document.addEventListener('click', (e) => {
       "Upload file" yourself on Commons.
     </p>
     <textarea id="${rowId}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
+    <div class="stub-toolbar">
+      <button class="small-btn commons-check-btn" data-inat-id="${inatId}" data-status-target="${checkStatusId}">↻ Uploaded it? Check Commons &amp; propose adding to Wikidata</button>
+    </div>
+    <p id="${checkStatusId}" class="stub-toolbar-hint"></p>
   </td>`;
   row.after(box);
 
@@ -4338,6 +4368,70 @@ document.addEventListener('click', (e) => {
     const el = document.getElementById(domainId);
     if (el) el.textContent = '· could not check the allow-list right now';
   });
+});
+
+// The natural next step after "prepare upload": upload, then add to Wikidata, as one
+// flow instead of two disconnected ones — no waiting for (or triggering) a full pipeline
+// re-run just to find out the file landed and offer the P18 draft. Lives inside the
+// upload-row itself so a curator never has to go hunting for a second button elsewhere.
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.commons-check-btn');
+  if (!btn) return;
+  const inatId = Number(btn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  const statusEl = document.getElementById(btn.dataset.statusTarget);
+  if (!t || !t.obsPhoto || !statusEl) return;
+
+  const uploadRow = btn.closest('tr');
+  const taxonRow = uploadRow && uploadRow.previousElementSibling;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  statusEl.textContent = '';
+  try {
+    const found = await checkCommonsUploadStatus(t);
+    if (!found) {
+      statusEl.textContent = "Not found on Commons yet — if you just uploaded it, QLever's mirror can take a few minutes to catch up. Try again shortly.";
+      return;
+    }
+    // Re-check P18 live too (not just the batched result from earlier in this run) —
+    // the whole point of this button is reflecting what's true right now.
+    if (t.wikidata) {
+      const imgRows = await sparqlViaComunica(
+        `PREFIX wdt: <http://www.wikidata.org/prop/direct/> SELECT ?image WHERE { <https://www.wikidata.org/entity/${t.wikidata.qid}> wdt:P18 ?image } LIMIT 1`,
+        WDQS_ENDPOINT, { silent: true, retries: 1, label: `Live image (P18) check for ${t.wikidata.qid}` }
+      );
+      t.wikidataNoImage = imgRows.length === 0;
+    }
+    // Same "refresh just this one row's cells" technique renderTaxonDetail uses for its
+    // own mini-row — keeps every other open panel (other upload/qs rows) untouched,
+    // unlike a full renderTable() which would wipe this very box mid-read.
+    if (taxonRow) taxonRow.innerHTML = buildTaxonRowCells(t, { linkName: true });
+    updateStats();
+
+    const filename = commonsImageFilename(t);
+    const fileLink = `<a href="${t.obsPhoto.commonsFile.pageUrl}" target="_blank" rel="noopener">File:${escapeHtml(filename)}</a>`;
+    if (needsWikidataImageLink(t)) {
+      const commands = buildWikidataImageLinkQS(t);
+      const draftId = `imagelink-followup-${inatId}-${Date.now()}`;
+      statusEl.innerHTML = `✓ found on Commons: ${fileLink}. Proposed QuickStatements to add it as the
+        image (<code>P18</code>) on <a href="${t.wikidata.uri}" target="_blank" rel="noopener">${t.wikidata.qid}</a>:
+        <div class="stub-toolbar">
+          <button class="small-btn copy-stub-btn" data-target="${draftId}">Copy commands</button>
+          <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+        </div>
+        <textarea id="${draftId}" class="stub-textarea" readonly spellcheck="false">${commands}</textarea>`;
+    } else {
+      statusEl.innerHTML = `✓ found on Commons: ${fileLink}. ${
+        !t.wikidata ? 'No Wikidata item to add it to yet.' : "Wikidata already has an image for this item — nothing to propose."
+      }`;
+    }
+  } catch (err) {
+    statusEl.textContent = `Check failed: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 });
 
 document.addEventListener('click', async (e) => {
