@@ -2795,6 +2795,11 @@ const bulkInatIdBtn = document.getElementById('bulkInatIdBtn');
 const bulkInatIdBox = document.getElementById('bulkInatIdBox');
 const bulkInatIdTextarea = document.getElementById('bulkInatIdTextarea');
 const bulkInatIdCopyBtn = document.getElementById('bulkInatIdCopyBtn');
+const bulkCreateBtn = document.getElementById('bulkCreateBtn');
+const bulkCreateBox = document.getElementById('bulkCreateBox');
+const bulkCreateWarning = document.getElementById('bulkCreateWarning');
+const bulkCreateTextarea = document.getElementById('bulkCreateTextarea');
+const bulkCreateCopyBtn = document.getElementById('bulkCreateCopyBtn');
 const taxonDetailEl = document.getElementById('taxonDetail');
 const taxonDetailBackBtn = document.getElementById('taxonDetailBack');
 const taxonDetailHeaderEl = document.getElementById('taxonDetailHeader');
@@ -4386,6 +4391,47 @@ bulkInatIdCopyBtn.addEventListener('click', () => {
   });
 });
 
+bulkCreateBtn.addEventListener('click', async () => {
+  if (!bulkCreateBox.hidden) {
+    bulkCreateBox.hidden = true;
+    return;
+  }
+  bulkCreateBox.hidden = false;
+  bulkCreateWarning.hidden = true;
+  const taxa = currentTaxa.filter(t => !t.wikidata);
+  const originalText = bulkCreateBtn.textContent;
+  bulkCreateBtn.disabled = true;
+  bulkCreateTextarea.value = '';
+  bulkCreateTextarea.placeholder = `Building ${taxa.length} draft${taxa.length === 1 ? '' : 's'} — same iNaturalist/GBIF/NCBI lookups as each row's own button, just for all of them at once…`;
+  try {
+    const { commands, failures } = await buildBulkCreateQS(taxa, (done, total) => {
+      bulkCreateBtn.textContent = `Building… ${done}/${total}`;
+    });
+    bulkCreateTextarea.value = commands;
+    if (failures.length) {
+      bulkCreateWarning.hidden = false;
+      bulkCreateWarning.textContent = `${failures.length} draft${failures.length === 1 ? '' : 's'} could not be built and ${failures.length === 1 ? 'was' : 'were'} skipped: ${failures.join('; ')}`;
+    }
+  } catch (err) {
+    bulkCreateTextarea.placeholder = '';
+    bulkCreateWarning.hidden = false;
+    bulkCreateWarning.textContent = `Failed to build the batch: ${err.message}`;
+  } finally {
+    bulkCreateBtn.disabled = false;
+    bulkCreateBtn.textContent = originalText;
+  }
+});
+
+bulkCreateCopyBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(bulkCreateTextarea.value).then(() => {
+    const original = bulkCreateCopyBtn.textContent;
+    bulkCreateCopyBtn.textContent = 'Copied!';
+    setTimeout(() => { bulkCreateCopyBtn.textContent = original; }, 1500);
+  }).catch(() => {
+    bulkCreateTextarea.select();
+  });
+});
+
 document.getElementById('filters').addEventListener('click', (e) => {
   const btn = e.target.closest('.filter-btn');
   if (!btn) return;
@@ -4530,6 +4576,7 @@ function updateStats() {
   const missingAll = currentTaxa.filter(t => taxonMissingCount(t) === LANGS.length).length;
   const inatIdMissingCount = currentTaxa.filter(inatIdMissing).length;
   const inatIdConflict = currentTaxa.filter(t => t.wikidataInatIdConflict).length;
+  const unresolvedCount = currentTaxa.filter(t => !t.wikidata).length;
   document.getElementById('statTotal').textContent = total;
   document.getElementById('statResolved').textContent = resolved;
   document.getElementById('statMissingAny').textContent = missingAny;
@@ -4537,7 +4584,7 @@ function updateStats() {
   document.getElementById('statInatIdMissing').textContent = inatIdMissingCount;
   document.getElementById('statInatIdConflict').textContent = inatIdConflict;
   statsEl.hidden = false;
-  updateBulkInatIdAction(inatIdMissingCount);
+  updateBulkActions(inatIdMissingCount, unresolvedCount);
 
   // Only meaningful once the GBIF cross-check has actually run (step 6 of run(), or — if
   // that step itself failed — never) — the stat cards and filter buttons stay hidden until
@@ -4570,14 +4617,48 @@ function buildBulkInatIdLinkQS(taxa) {
   return taxa.map(buildInatIdLinkQS).join('\n');
 }
 
-function updateBulkInatIdAction(count) {
-  bulkInatIdBox.hidden = true;
-  if (!count) {
-    bulkActionsEl.hidden = true;
-    return;
+// Same idea for taxa with no Wikidata match at all — but unlike the iNat-id-link batch
+// above, buildQuickStatements() does several real network calls per taxon (iNaturalist
+// ancestor detail, GBIF match, NCBI Taxonomy, parent-candidate resolution), so this can't
+// just be a synchronous map+join. Bounded concurrency rather than firing every taxon's
+// lookups at once — a large "not found" list hitting several public APIs simultaneously
+// looks like a burst to more than one of them (same reasoning as runBatchedStep's own
+// inter-request gap). A single taxon's draft failing (network hiccup, etc.) is skipped
+// with a note rather than losing the whole batch — same "degrade gracefully" rule as
+// every other bulk step here; `onProgress`, if given, is called after each one finishes.
+async function buildBulkCreateQS(taxa, onProgress) {
+  const CONCURRENCY = 4;
+  const blocks = new Array(taxa.length);
+  const failures = [];
+  let next = 0, done = 0;
+  async function worker() {
+    while (next < taxa.length) {
+      const i = next++;
+      try {
+        blocks[i] = await buildQuickStatements(taxa[i]);
+      } catch (e) {
+        failures.push(`${taxa[i].name}: ${e.message}`);
+      }
+      done++;
+      if (onProgress) onProgress(done, taxa.length);
+    }
   }
-  bulkActionsEl.hidden = false;
-  bulkInatIdBtn.textContent = `Propose QuickStatements — link all ${count} missing iNat ID${count === 1 ? '' : 's'}`;
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, taxa.length) }, worker));
+  return { commands: blocks.filter(Boolean).join('\n'), failures };
+}
+
+function updateBulkActions(inatIdMissingCount, unresolvedCount) {
+  bulkInatIdBox.hidden = true;
+  bulkCreateBox.hidden = true;
+  bulkActionsEl.hidden = !inatIdMissingCount && !unresolvedCount;
+  bulkInatIdBtn.hidden = !inatIdMissingCount;
+  if (inatIdMissingCount) {
+    bulkInatIdBtn.textContent = `Propose QuickStatements — link all ${inatIdMissingCount} missing iNat ID${inatIdMissingCount === 1 ? '' : 's'}`;
+  }
+  bulkCreateBtn.hidden = !unresolvedCount;
+  if (unresolvedCount) {
+    bulkCreateBtn.textContent = `Propose QuickStatements — create all ${unresolvedCount} new Wikidata item${unresolvedCount === 1 ? '' : 's'}`;
+  }
 }
 
 async function run() {
@@ -4596,6 +4677,7 @@ async function run() {
   identityPanelEl.hidden = true;
   bulkActionsEl.hidden = true;
   bulkInatIdBox.hidden = true;
+  bulkCreateBox.hidden = true;
   taxonDetailEl.hidden = true;
   statSynonymDuplicateCard.hidden = true;
   statWikidataMismatchCard.hidden = true;
