@@ -408,7 +408,13 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       the database in general — its own usage key as a `P846` reference snak alongside the
       usual `S248`, whenever that key is known. A synonym name with *no* Wikidata item at
       all gets the same treatment as an unmatched main taxon — its own `CREATE` draft
-      (`P31`/`P105` from its own GBIF rank, when known/`P225`/labels/description, plus
+      (`P31`/`P105` from its own GBIF rank, when known/`P225`/labels/description — the
+      description deliberately just says "species synonym" (or whatever the rank is), not
+      "species synonym of *Boana xerophylla*": synonymy gets revised often enough that a
+      specific accepted name baked into free-text description quietly goes stale, with
+      nobody likely to notice or fix it afterwards. The actual "synonym of" fact belongs to
+      `P1420` below, a structured statement that can be corrected if the accepted name
+      changes, unlike description text — plus
       `P846` when that synonym's own GBIF usage key is known — its subject URI,
       `https://www.gbif.org/species/<key>`, also shown as a plain link next to "not on
       Wikidata" in the list, so the id is visible before ever opening the draft), except it
@@ -632,7 +638,18 @@ and a series of consecutive hackathons — the [DBCLS BioHackathons](https://bio
 and [SWAT4HCLS](https://www.swat4hcls.org/). See
 ["BioHackJP24 report: Running a WikiBlitz"](https://doi.org/10.37044/osf.io/5ue2s_v1) for the
 earlier work this dashboard builds on. The logo is
-[Koetai](https://koetai.semscape.org)'s own Anableps mark.
+[Koetai](https://koetai.semscape.org)'s own Anableps mark. The Plazi TreatmentBank
+integration builds on [Plazi](http://plazi.org/)'s own work turning taxonomic literature
+into structured, reusable treatments — thanks to
+[Donat Agosti](https://www.wikidata.org/wiki/Q20650434) (ORCID [0000-0001-9286-1200](https://orcid.org/0000-0001-9286-1200))
+and Plazi.
+
+**Feedback:** [Siobhan Leachman](https://www.wikidata.org/wiki/Q54823671)
+(ORCID [0000-0002-5398-7721](https://orcid.org/0000-0002-5398-7721), via Telegram) —
+reported *Izatha balanophora* showing as
+"not found" on Wikidata despite already having an item ([Q6101631](https://www.wikidata.org/wiki/Q6101631),
+mismatched by a `P225` typo but correctly linked via `P3151`) — fixed by the `P3151` fallback
+match in `resolveWikidata()`.
 
 ## Files
 
