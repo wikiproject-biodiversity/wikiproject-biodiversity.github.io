@@ -281,22 +281,44 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
     queryParams = `${param}=${encodeURIComponent(scopeValue)}`;
   }
 
-  const observations = [];
-  let page = 1;
   const perPage = 200;
-  while (observations.length < MAX_OBSERVATIONS) {
-    const url = `${INAT_API}/observations?${queryParams}&per_page=${perPage}&page=${page}&order_by=id`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${scopeType === 'user' ? 'login/id' : scopeType === 'osm' ? 'reference' : scopeType === 'taxon' ? 'name/id' : 'slug/id'}?)`);
-    const json = await res.json();
-    if (page === 1 && json.total_results === 0) {
-      throw new Error(`No observations found for ${noun} "${scopeValue}".`);
+  const pageUrl = (page) => `${INAT_API}/observations?${queryParams}&per_page=${perPage}&page=${page}&order_by=id`;
+  const badScopeHint = scopeType === 'user' ? 'login/id' : scopeType === 'osm' ? 'reference' : scopeType === 'taxon' ? 'name/id' : 'slug/id';
+
+  const firstRes = await fetch(pageUrl(1), { headers: { Accept: 'application/json' } });
+  if (!firstRes.ok) throw new Error(`iNaturalist API HTTP ${firstRes.status} (is "${scopeValue}" a valid ${noun} ${badScopeHint}?)`);
+  const firstJson = await firstRes.json();
+  if (firstJson.total_results === 0) throw new Error(`No observations found for ${noun} "${scopeValue}".`);
+  const observations = [...firstJson.results];
+  let fetchedCount = observations.length;
+  onProgress(fetchedCount, firstJson.total_results);
+
+  // Page 1 already told us how many results exist, and iNaturalist's page-based pagination
+  // (as opposed to its id-cursor pagination) addresses pages directly by number up to its
+  // own 10,000-result ceiling — MAX_OBSERVATIONS stays comfortably under that — so the rest
+  // don't need to wait on each other in turn the way a cursor would force. Bounded
+  // concurrency, not unlimited: still reads as ordinary traffic to the API rather than a
+  // burst, same "be polite" reasoning the old one-at-a-time sleep(150) was for, just
+  // applied to a handful of requests in flight together instead of one.
+  const totalWanted = Math.min(firstJson.total_results, MAX_OBSERVATIONS);
+  const totalPages = Math.ceil(totalWanted / perPage);
+  if (totalPages > 1) {
+    const CONCURRENCY = 4;
+    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2); // 2..totalPages
+    let next = 0;
+    async function worker() {
+      while (next < pages.length) {
+        const page = pages[next++];
+        const res = await fetch(pageUrl(page), { headers: { Accept: 'application/json' } });
+        if (!res.ok) throw new Error(`iNaturalist API HTTP ${res.status} (is "${scopeValue}" a valid ${noun} ${badScopeHint}?)`);
+        const json = await res.json();
+        observations.push(...json.results);
+        fetchedCount += json.results.length;
+        onProgress(fetchedCount, firstJson.total_results);
+        await sleep(150); // be polite to the API
+      }
     }
-    observations.push(...json.results);
-    onProgress(observations.length, json.total_results);
-    if (observations.length >= json.total_results || json.results.length === 0) break;
-    page++;
-    await sleep(150); // be polite to the API
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pages.length) }, worker));
   }
 
   const byTaxon = new Map();
@@ -1912,6 +1934,25 @@ SELECT ?item ?parentName ?parentRank WHERE {
 // nothing to compare, `{kind:'incomplete', expected}` when Wikidata has no P171 at all
 // despite GBIF having an answer, `{kind:'wrong', expected, actual}` when they disagree).
 async function resolveGbifCrossCheck(taxa) {
+  // Wikidata classification (parentMap) and taxonomic-rank items (rankQids) only need
+  // taxa's ALREADY-resolved t.wikidata — nothing the usage/synonym/synonym-Wikidata/
+  // sitelinks chain below computes — so there's no reason for them to wait behind it.
+  // Started now, awaited later, right where the result actually gets used; found live
+  // testing that this chain (plus its own live-endpoint timeouts) was the single largest
+  // contributor to a run's total time, so anything in this function not on that critical
+  // path is worth pulling out from behind it.
+  const wikidataQids = [...new Set(taxa.filter(t => t.wikidata).map(t => t.wikidata.qid))];
+  const classificationPromise = (async () => {
+    const parentMap = new Map();
+    await runBatchedStep(wikidataQids, 'GBIF cross-check — Wikidata classification', async (batch) => {
+      const rows = await fetchWikidataDirectParents(batch);
+      for (const [qid, info] of rows) parentMap.set(qid, info);
+      return rows.size;
+    }, BATCH_SIZE);
+    return parentMap;
+  })();
+  const rankQidsPromise = getTaxonomicRankQids().catch(() => new Map());
+
   const names = [...new Set(taxa.map(t => t.name))];
   const usageMap = new Map();
   await runBatchedStep(names, 'GBIF cross-check — usage lookup', async (batch) => {
@@ -1954,14 +1995,7 @@ async function resolveGbifCrossCheck(taxa) {
     return rows.size;
   }, BATCH_SIZE);
 
-  const wikidataQids = [...new Set(taxa.filter(t => t.wikidata).map(t => t.wikidata.qid))];
-  const parentMap = new Map();
-  await runBatchedStep(wikidataQids, 'GBIF cross-check — Wikidata classification', async (batch) => {
-    const rows = await fetchWikidataDirectParents(batch);
-    for (const [qid, info] of rows) parentMap.set(qid, info);
-    return rows.size;
-  }, BATCH_SIZE);
-  const rankQids = await getTaxonomicRankQids().catch(() => new Map());
+  const [parentMap, rankQids] = await Promise.all([classificationPromise, rankQidsPromise]);
   const primaryRankQids = new Set(
     ['kingdom', 'phylum', 'class', 'order', 'family', 'genus'].map(r => rankQids.get(r)).filter(Boolean)
   );
@@ -5112,39 +5146,45 @@ async function runFresh(scopeType, scopeValue, osmRadiusKm) {
   // record to link.
   if (scopeType !== 'osm' && scopeType !== 'taxon') checkIdentityLinking(scopeType, scopeValue);
 
-  // A step count the user can see progress against, however imprecise any single step's
-  // own timing is — "step 3 of 5" is honest and useful even when "how long is step 3"
-  // isn't knowable until it's running (see runBatchedStep's live ETA for that part).
-  const TOTAL_STEPS = 7;
-  const step = (n, label) => `Step ${n}/${TOTAL_STEPS}: ${label}`;
+  // Stages, not individual checks — most of the checks below never actually depended on
+  // each other and were only ever run one after another because that's how this was first
+  // written, not because anything required it. Plazi and Commons only need this run's own
+  // taxa/photos, not a Wikidata match; sitelinks and P18 coverage both only need the
+  // Wikidata match, not each other. A large project's run could take up to an hour end to
+  // end as a result — running the genuinely-independent checks within a stage concurrently
+  // instead (each still paced/batched against its own endpoint exactly as before; this
+  // only changes how many stages run at once, not how any one of them behaves) brings that
+  // stage's wall-clock time down to roughly its slowest member, not their sum. GBIF
+  // cross-check stays last on its own: it reads both t.wikidata and t.wikipedia, so it
+  // needs both stages before it to have actually finished.
+  const TOTAL_STAGES = 4;
+  const stage = (n, label) => `Stage ${n}/${TOTAL_STAGES}: ${label}`;
 
   try {
-    setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"…`));
+    setStatusHeader(stage(1, `Fetching observations for ${noun} "${scopeValue}"…`));
     const taxa = await fetchScopedTaxa(scopeType, scopeValue, (n, total) => {
-      setStatusHeader(step(1, `Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`));
+      setStatusHeader(stage(1, `Fetching observations for ${noun} "${scopeValue}"… ${n}/${total || '?'}`));
     }, osmRadiusKm);
     log(`${taxa.length} distinct taxa found.`);
 
-    setStatusHeader(step(2, `Resolving ${taxa.length} taxa against Wikidata (via Comunica → QLever)…`));
-    await resolveWikidata(taxa);
+    setStatusHeader(stage(2, `Resolving ${taxa.length} taxa against Wikidata, Plazi TreatmentBank, and Wikimedia Commons (in parallel)…`));
+    await Promise.all([
+      resolveWikidata(taxa),
+      resolvePlazi(taxa),
+      resolveCommonsStatus(taxa),
+    ]);
 
-    setStatusHeader(step(3, `Checking Wikipedia (en/ja/es/pt) sitelinks (via Comunica → WDQS)…`));
-    await resolveSitelinks(taxa);
-
-    setStatusHeader(step(4, `Checking Plazi TreatmentBank (via Comunica → QLever)…`));
-    await resolvePlazi(taxa);
-
-    setStatusHeader(step(5, `Checking Wikimedia Commons for existing uploads (via Comunica → QLever)…`));
-    await resolveCommonsStatus(taxa);
-
-    setStatusHeader(step(6, `Checking Wikidata image (P18) coverage (via Comunica → QLever)…`));
-    await resolveWikidataImages(taxa);
+    setStatusHeader(stage(3, `Checking Wikipedia sitelinks and Wikidata image coverage (in parallel)…`));
+    await Promise.all([
+      resolveSitelinks(taxa),
+      resolveWikidataImages(taxa),
+    ]);
 
     // Used to be its own opt-in "Cross-check against GBIF" button — always clicked in
     // practice, so it's just part of the run now. Its own failure shouldn't sink an
     // otherwise-successful run (GBIF's mirror is one more public endpoint this tool
     // doesn't control), so it's wrapped separately rather than left in the outer try.
-    setStatusHeader(step(7, `Cross-checking against GBIF (synonymy + classification)…`));
+    setStatusHeader(stage(4, `Cross-checking against GBIF (synonymy + classification)…`));
     try {
       await resolveGbifCrossCheck(taxa);
       gbifCrossCheckDone = true;
