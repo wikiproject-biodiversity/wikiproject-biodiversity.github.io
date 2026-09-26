@@ -306,6 +306,17 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    yourself after reviewing them — in particular, QuickStatements' own duplicate-item warnings
    are the real safety net here, since this dashboard's own "not found" check is only an exact
    `P225` string match (see the synonym/splits caveat above).
+
+   Every other batch feature in this tool (synonym `CREATE`s, treatment `CREATE`s, the
+   taxonomic tree's) offers a "fix them all at once" combined batch — this one, oddly, didn't:
+   a project with dozens of unmatched taxa meant clicking "propose QuickStatements" that many
+   times with no way to combine them. Fixed with a bulk button next to the existing "link all
+   missing iNat IDs" one (`buildBulkCreateQS()`), same `bulkActions` panel. Unlike the iNat-id
+   one, this can't be a synchronous map+join — `buildQuickStatements()` makes several real
+   network calls per taxon (iNaturalist detail, GBIF, NCBI, parent-candidate resolution) — so
+   it runs with bounded concurrency (4 at a time, not the whole list at once, which would look
+   like a burst to more than one public API) and skips (with a note, not silently) any single
+   taxon whose draft fails to build rather than losing the whole batch.
 10. **Is the project/user itself on Wikidata?** — a separate identity panel, unrelated to the
     per-taxon logic above, runs automatically (concurrently with the taxa pipeline) for whatever
     scope you entered:
