@@ -2800,6 +2800,11 @@ const bulkCreateBox = document.getElementById('bulkCreateBox');
 const bulkCreateWarning = document.getElementById('bulkCreateWarning');
 const bulkCreateTextarea = document.getElementById('bulkCreateTextarea');
 const bulkCreateCopyBtn = document.getElementById('bulkCreateCopyBtn');
+const resumePromptEl = document.getElementById('resumePrompt');
+const resumePromptText = document.getElementById('resumePromptText');
+const resumeBtn = document.getElementById('resumeBtn');
+const startFreshBtn = document.getElementById('startFreshBtn');
+const discardSavedBtn = document.getElementById('discardSavedBtn');
 const taxonDetailEl = document.getElementById('taxonDetail');
 const taxonDetailBackBtn = document.getElementById('taxonDetailBack');
 const taxonDetailHeaderEl = document.getElementById('taxonDetailHeader');
@@ -2995,6 +3000,10 @@ document.addEventListener('click', (e) => {
 
 let currentTaxa = [];
 let currentFilter = 'all';
+// The scope actually behind currentTaxa — not just whatever's currently sitting in the
+// input fields, which the user is free to change while looking at a finished run's
+// results. Null until a run has actually populated currentTaxa.
+let currentRunScope = null;
 
 // Endpoints under load occasionally return an HTML error/gateway-timeout page instead
 // of a SPARQL error — and Comunica's own error message can embed that page's full body
@@ -4661,14 +4670,104 @@ function updateBulkActions(inatIdMissingCount, unresolvedCount) {
   }
 }
 
-async function run() {
-  const scopeType = scopeTypeSelect.value; // 'project', 'user', 'osm', or 'taxon'
-  const scopeValue = projectInput.value.trim();
-  if (!scopeValue) return;
-  const osmRadiusKm = Number(osmRadiusInput.value) || 10;
-  const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : scopeType === 'taxon' ? 'taxon' : 'project';
-  runBtn.disabled = true;
-  statusSpinnerEl.hidden = false;
+// ---------- Local persistence (resume a run without re-fetching everything) ----------
+// A project/user with thousands of observations can take a genuinely long time to run
+// through all 6 steps (each one its own round of QLever/WDQS/GBIF/NCBI lookups) — losing
+// all of that to a closed tab, or because app.js picked up a feature update, meant always
+// starting over from zero. Auto-saved to this browser's localStorage, keyed by scope, so
+// reopening the same project/user/taxon/OSM-area offers to resume instead.
+const RUN_CACHE_PREFIX = 'inat-wikidata-dashboard:run:';
+const RUN_CACHE_VERSION = 1;
+
+function runCacheKey(scopeType, scopeValue, osmRadiusKm) {
+  const norm = String(scopeValue).trim().toLowerCase();
+  const suffix = scopeType === 'osm' ? `:${osmRadiusKm}km` : '';
+  return `${RUN_CACHE_PREFIX}${scopeType}:${norm}${suffix}`;
+}
+
+// Per-taxon fields starting with `_` are on-demand caches for the curation page
+// (ensureStubContext, ensureQuickStatementsContext, BHL results, candidate images) —
+// populated lazily, re-fetched fresh every time that page opens regardless of whether
+// they're already set (see ensureStubContext's own `if (t._stubContext) return` — that
+// check is what makes it safe to just delete these here rather than restore them).
+// Persisting them would only bloat storage with data that's often stale by the time a
+// resumed session would use it again, for no actual savings.
+function stripEphemeralFields(t) {
+  const clean = {};
+  for (const k in t) if (!k.startsWith('_')) clean[k] = t[k];
+  return clean;
+}
+
+function saveCurrentRun() {
+  if (!currentRunScope || !currentTaxa.length) return;
+  const { scopeType, scopeValue, osmRadiusKm } = currentRunScope;
+  try {
+    const payload = {
+      version: RUN_CACHE_VERSION,
+      savedAt: new Date().toISOString(),
+      scopeType, scopeValue, osmRadiusKm,
+      gbifCrossCheckDone, articleQualityChecked,
+      taxa: currentTaxa.map(stripEphemeralFields),
+    };
+    localStorage.setItem(runCacheKey(scopeType, scopeValue, osmRadiusKm), JSON.stringify(payload));
+  } catch (e) {
+    // Quota exceeded (a large project's taxa list can run several MB) or storage blocked
+    // outright (private browsing) — losing the ability to resume later is a real cost,
+    // but not one that should interrupt a run that otherwise succeeded.
+    log(`Could not save progress locally for later (${e.message})`, 'warn');
+  }
+}
+
+function loadSavedRun(scopeType, scopeValue, osmRadiusKm) {
+  try {
+    const raw = localStorage.getItem(runCacheKey(scopeType, scopeValue, osmRadiusKm));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Only the shape this version actually knows how to restore — an older/newer saved
+    // copy (from a future feature update) is discarded rather than partially applied,
+    // same "don't guess" standard as everything else here. A taxon missing a field this
+    // version expects just reads as "not yet checked", which is already how undefined
+    // fields are treated everywhere in this codebase — no migration code needed for that.
+    if (!parsed || parsed.version !== RUN_CACHE_VERSION || !Array.isArray(parsed.taxa)) return null;
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function discardSavedRun(scopeType, scopeValue, osmRadiusKm) {
+  try { localStorage.removeItem(runCacheKey(scopeType, scopeValue, osmRadiusKm)); } catch (e) { /* nothing to do */ }
+}
+
+function relativeTime(isoString) {
+  const ms = Date.now() - new Date(isoString).getTime();
+  if (ms < 0) return 'just now';
+  if (ms < 60000) return 'moments ago';
+  if (ms < 3600000) return `${Math.floor(ms / 60000)} minute${Math.floor(ms / 60000) === 1 ? '' : 's'} ago`;
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)} hour${Math.floor(ms / 3600000) === 1 ? '' : 's'} ago`;
+  const days = Math.floor(ms / 86400000);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+// Applies a saved (or freshly resumed-from-cache) run's data to the page — the same final
+// step run() itself does after actually fetching everything, factored out so both paths
+// end up in an identical state.
+function applyLoadedRun(saved) {
+  currentTaxa = saved.taxa;
+  gbifCrossCheckDone = !!saved.gbifCrossCheckDone;
+  articleQualityChecked = !!saved.articleQualityChecked;
+  currentRunScope = { scopeType: saved.scopeType, scopeValue: saved.scopeValue, osmRadiusKm: saved.osmRadiusKm };
+  setStatusHeader(`Done — ${currentTaxa.length} taxa loaded (resumed from a saved run, ${relativeTime(saved.savedAt)}).`);
+  updateStats();
+  filtersEl.hidden = false;
+  tableWrapEl.hidden = false;
+  articleQualitySectionEl.hidden = false;
+  currentFilter = 'all';
+  [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
+  renderTable();
+}
+
+function resetRunUI() {
   statusHeaderTextEl.textContent = '';
   statusLogEl.innerHTML = '';
   statsEl.hidden = true;
@@ -4690,7 +4789,19 @@ async function run() {
   articleQualityChecked = false;
   identityState = null;
   currentTaxa = [];
+  currentRunScope = null;
+  resumePromptEl.hidden = true;
   if (location.hash) location.hash = ''; // a fresh search always starts on the table, not a stale taxon page
+}
+
+// The actual fetch pipeline — pulled out of run() so both "no saved copy exists" and
+// "start fresh" (from the resume prompt below) share the exact same path.
+async function runFresh(scopeType, scopeValue, osmRadiusKm) {
+  const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : scopeType === 'taxon' ? 'taxon' : 'project';
+  runBtn.disabled = true;
+  statusSpinnerEl.hidden = false;
+  resetRunUI();
+  currentRunScope = { scopeType, scopeValue, osmRadiusKm };
 
   // Independent of the taxa pipeline below (it's about the scope itself, not the
   // species observed in it), so it runs concurrently rather than blocking on it.
@@ -4744,6 +4855,7 @@ async function run() {
     currentFilter = 'all';
     [...document.querySelectorAll('.filter-btn')].forEach(b => b.classList.toggle('active', b.dataset.filter === 'all'));
     renderTable();
+    saveCurrentRun();
   } catch (err) {
     setStatusHeader(`Error: ${err.message}`);
     log(err.stack || '', 'err');
@@ -4752,6 +4864,54 @@ async function run() {
     statusSpinnerEl.hidden = true;
   }
 }
+
+let pendingResumeScope = null;
+
+// Entry point for the "Load observations →" button: checks for a saved run matching this
+// exact scope first, and if one exists, offers to resume it instead of silently either
+// re-fetching everything (slow, and wastes the whole point of having saved it) or loading
+// stale data without asking (surprising — the input fields might have been left over from
+// a previous look at a DIFFERENT scope's results, not necessarily "resume this").
+async function run() {
+  const scopeType = scopeTypeSelect.value; // 'project', 'user', 'osm', or 'taxon'
+  const scopeValue = projectInput.value.trim();
+  if (!scopeValue) return;
+  const osmRadiusKm = Number(osmRadiusInput.value) || 10;
+
+  const saved = loadSavedRun(scopeType, scopeValue, osmRadiusKm);
+  if (saved) {
+    resetRunUI();
+    const noun = scopeType === 'user' ? 'user' : scopeType === 'osm' ? 'OSM area' : scopeType === 'taxon' ? 'taxon' : 'project';
+    pendingResumeScope = { scopeType, scopeValue, osmRadiusKm, saved };
+    resumePromptText.textContent = `A saved run for this ${noun} exists: ${saved.taxa.length} taxa, saved ${relativeTime(saved.savedAt)}. Resume it instantly, or start fresh to re-fetch everything?`;
+    resumePromptEl.hidden = false;
+    return;
+  }
+  await runFresh(scopeType, scopeValue, osmRadiusKm);
+}
+
+resumeBtn.addEventListener('click', () => {
+  if (!pendingResumeScope) return;
+  resumePromptEl.hidden = true;
+  applyLoadedRun(pendingResumeScope.saved);
+  pendingResumeScope = null;
+});
+
+startFreshBtn.addEventListener('click', async () => {
+  if (!pendingResumeScope) return;
+  const { scopeType, scopeValue, osmRadiusKm } = pendingResumeScope;
+  resumePromptEl.hidden = true;
+  pendingResumeScope = null;
+  await runFresh(scopeType, scopeValue, osmRadiusKm);
+});
+
+discardSavedBtn.addEventListener('click', () => {
+  if (!pendingResumeScope) return;
+  const { scopeType, scopeValue, osmRadiusKm } = pendingResumeScope;
+  discardSavedRun(scopeType, scopeValue, osmRadiusKm);
+  resumePromptEl.hidden = true;
+  pendingResumeScope = null;
+});
 
 checkArticleQualityBtn.addEventListener('click', async () => {
   checkArticleQualityBtn.disabled = true;
@@ -4764,6 +4924,7 @@ checkArticleQualityBtn.addEventListener('click', async () => {
     articleQualityChecked = true;
     updateStats();
     renderTable();
+    saveCurrentRun();
     const stubCount = currentTaxa.filter(t => t.hasStubArticle).length;
     log(`Article quality check — ${stubCount} taxa with a stub-sized article in at least one language.`);
   } catch (e) {
