@@ -107,6 +107,7 @@
   <div class="identity-row">
     <button id="bulkInatIdBtn" class="small-btn upload-btn"></button>
     <button id="bulkCreateBtn" class="small-btn upload-btn"></button>
+    <button id="bulkImageLinkBtn" class="small-btn upload-btn"></button>
   </div>
   <div id="bulkInatIdBox" hidden>
     <p class="identity-note">Proposed QuickStatements to add the iNaturalist taxon id to every matched item below that's missing one — review before running, same as any other batch edit.</p>
@@ -124,6 +125,14 @@
       <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
     </div>
     <textarea id="bulkCreateTextarea" class="stub-textarea" readonly spellcheck="false"></textarea>
+  </div>
+  <div id="bulkImageLinkBox" hidden>
+    <p class="identity-note">Proposed QuickStatements to add an image (<code>P18</code>) to every matched item below that has none, using a Commons filename this run already knows about (this run's own observation photo, already confirmed on Commons, or a curator's picked image) — review before running, same as any other batch edit. A taxon whose photo isn't on Commons yet needs "prepare upload" first; it won't show up here until then.</p>
+    <div class="stub-toolbar">
+      <button id="bulkImageLinkCopyBtn" class="small-btn">Copy commands</button>
+      <a class="small-btn" href="https://quickstatements.toolforge.org/" target="_blank" rel="noopener">Open QuickStatements ↗</a>
+    </div>
+    <textarea id="bulkImageLinkTextarea" class="stub-textarea" readonly spellcheck="false"></textarea>
   </div>
 </section>
 
