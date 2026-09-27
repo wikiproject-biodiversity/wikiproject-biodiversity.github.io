@@ -185,6 +185,22 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
    (`?utm_source=commons.wikimedia.org&…`) after the real filename — `commonsFilenameFromUrl()`
    strips it before use; missing that produced a broken file link (found live, while building
    the image picker below, and fixed everywhere in this file that parses a `contentUrl`).
+
+   The Image column also shows each photo's iNaturalist **quality grade** — Research Grade,
+   Needs ID, or Casual (`qualityGradeBadge()`) — and it's policy, not just information: only
+   Research Grade observations are offered "prepare upload" or a `P18`-add proposal at all
+   (`isResearchGrade()`). Casual and Needs ID haven't been through iNaturalist's own community
+   vetting (no confirmed location/date, or the ID itself isn't community-agreed yet), so an
+   image tied to one is exactly the kind of thing that turns out misidentified or otherwise
+   unusable later — after it's already on Commons and, worse, already asserted as `P18` on a
+   Wikidata item. Checked in two places, not just where the button is rendered: `renderImageCell()`
+   doesn't show the button for a non-RG photo, and the `.commons-btn` click handler checks
+   again independently, in case the DOM is stale. `commonsImageFilename()` — the single
+   function both the upload flow and the `P18`-link flow read the filename through — applies
+   the same restriction to *that* observation's own photo specifically, but not to a curator's
+   own explicit pick from the image selector panel (`t._selectedImage`): that's already an
+   existing, real Commons file the curator chose on its own merits, unrelated to any one
+   observation's grade.
 7. **Comunica → Wikidata image (`P18`) coverage (QLever, WDQS fallback)** —
    `resolveWikidataImages()`, batched over every resolved item, checks whether it has *any*
    `wdt:P18` statement at all. Distinct from the Commons duplicate-check above: a taxon can be
@@ -644,14 +660,28 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
       `_`-prefixed per-taxon fields `stripEphemeralFields()` strips before saving — it's
       stored as its own top-level `commonNameGroups` field and survives a save/resume
       (see "Resuming a run" below) intact.
-    - **Deliberately not built (yet)**: a visualization of *where* sources disagree across
-      a group, generated and pushed to Commons automatically. Checked directly —
-      `buildCommonsUploadUrl()` only works because the source file already has a stable
-      external URL Commons fetches server-side; a freshly generated diagram has no such
-      URL, and this tool has no backend/OAuth to upload one directly (a deliberate design
-      choice throughout). A generated-and-downloadable version, for the curator to upload
-      themselves the same way they already do for photos, is a plausible follow-up, not
-      something this pass silently dropped.
+    - **Taxonomic divergence diagram** (`buildGroupDivergenceSvg()`, "Prepare taxonomic
+      diagram" on the group panel) — a hand-rolled SVG, no charting library, same
+      zero-dependency/no-build-step design as the rest of this tool: the group's title as
+      a root node, one branch per member. A member with no `wikidataGbifMismatch` gets a
+      single line labelled "GBIF and Wikidata agree"; a member *with* one gets two
+      diverging, differently-styled branches instead — solid blue to GBIF's own placement,
+      dashed red to Wikidata's — so the disagreement is the visual point, not a footnote.
+      Reuses the exact `wikidataGbifMismatch` data the taxonomy chapter above already
+      shows; no new discrepancy detection.
+
+      Confirmed directly (`buildCommonsUploadUrl()`, read before building this) that this
+      can't be pushed to Commons automatically the way an iNaturalist photo is: that
+      mechanism only works because the source file already has a stable external URL
+      Commons fetches itself, and a freshly generated SVG has none — this tool has no
+      backend/OAuth to upload one directly, a deliberate design choice throughout. So
+      instead: a live inline preview, a "Download SVG" button (client-side `Blob` +
+      `URL.createObjectURL`, no server round-trip), and prepared `{{Information}}`
+      wikitext for the file description page — author/license deliberately left blank for
+      the curator to fill in, same restraint `buildCommonsWikitext()` already shows for an
+      observation photo's own `| permission = `. The curator uploads it themselves via
+      Commons' own Upload Wizard, same "you do the final step" posture as every other
+      Commons interaction this tool has.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
