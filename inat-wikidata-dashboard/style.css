@@ -494,6 +494,12 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
   font-size: 0.9rem; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--text); min-width: 220px;
 }
+
+.group-diagram-preview {
+  margin: 10px 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px;
+  background: #ffffff; overflow-x: auto;
+}
+.group-diagram-preview svg { display: block; max-width: 100%; height: auto; }
 .stub-toolbar-hint { font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 8px; }
 
 .bhl-citation-label {
