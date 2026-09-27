@@ -612,6 +612,46 @@ know a slug/login/OSM id/taxon id), pick a suggestion or leave your own value, a
     that exact title. Not part of the automatic pipeline (one API call per language per
     taxon that already has an article), so it's opt-in, same reasoning as the GBIF
     cross-check.
+17. **Common name groups (curator-decided)** — raised after actual curation: one article
+    per exact scientific name doesn't scale, and is fragile against how often names and
+    synonymy shift (a split, lump, or rename can obsolete or duplicate a narrowly-scoped
+    article). The "Common name group" panel on the curation page (right after Synonymy &
+    homonymy, whose data it reuses directly) lets a curator group several scientific names
+    under one article titled by a shared common name instead — the per-name stub stays the
+    fallback, exactly as it was, for anything not grouped.
+    - **Suggestions, not automation** (`suggestGroupCandidates()`): reads
+      `t._synonymNames` (GBIF's synonym list, already fetched by the bulk cross-check) and
+      shared `t.commonName` across the current run — no new network calls — and proposes
+      other taxa that plausibly belong together. Purely advisory: the curator explicitly
+      ticks which ones to include and picks the group's title (pre-filled from
+      `t.commonName` when set); nothing is grouped automatically. A taxon belongs to at
+      most one group — added to a new one, it's silently dropped from whichever it was in
+      (`addTaxonToGroup()`).
+    - **The group stub** (`buildGroupStub()`) has no per-taxon infobox — there's no single
+      rank/parent/authority to build a `{{Speciesbox}}` from, since the whole point is
+      several names sharing one article — just a lead sentence and a `==Taxonomy==`
+      section, one line per member. Where a member has a `wikidataGbifMismatch` (computed
+      by the GBIF cross-check, same data the "no image"-style badges already show
+      elsewhere), that disagreement is named in its own line rather than silently picked
+      one way — reusing the discrepancy this tool already detects, not adding new
+      detection logic for it.
+    - **"Already covered" has to work differently for a group**: there's no single
+      Wikidata item to read sitelinks from the way `resolveSitelinks()` does for one
+      taxon, so `checkWikipediaTitleExists()` asks each Wikipedia directly, live, by the
+      group's title (`action=query&titles=…`) — on demand, one group at a time, not part
+      of the batched pipeline.
+    - Group membership is a curator decision, not a re-fetchable cache, so — unlike the
+      `_`-prefixed per-taxon fields `stripEphemeralFields()` strips before saving — it's
+      stored as its own top-level `commonNameGroups` field and survives a save/resume
+      (see "Resuming a run" below) intact.
+    - **Deliberately not built (yet)**: a visualization of *where* sources disagree across
+      a group, generated and pushed to Commons automatically. Checked directly —
+      `buildCommonsUploadUrl()` only works because the source file already has a stable
+      external URL Commons fetches server-side; a freshly generated diagram has no such
+      URL, and this tool has no backend/OAuth to upload one directly (a deliberate design
+      choice throughout). A generated-and-downloadable version, for the curator to upload
+      themselves the same way they already do for photos, is a plausible follow-up, not
+      something this pass silently dropped.
 
 Query timings for the current run are logged live under the project input, in a small
 scrolling panel — each step logs one aggregate line (batches, items, rows, elapsed time)
