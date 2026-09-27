@@ -1813,6 +1813,56 @@ function synonymyPanel(t, info) {
   return `<div class="identity-panel taxon-action-panel"><h3>Synonymy &amp; homonymy</h3>${sections.join('')}</div>`;
 }
 
+// Renders either "here's the group this taxon is already in" or "here's how to start
+// one" — never both. Suggested candidates (suggestGroupCandidates) are read straight
+// from data the synonymy panel above already computed; this panel doesn't run any check
+// of its own, just offers a different action on the same information.
+function commonNameGroupPanel(t) {
+  const group = findGroupForTaxon(t);
+  if (group) {
+    const members = group.memberInatIds.map(id => currentTaxa.find(x => x.inatId === id)).filter(Boolean);
+    const rows = members.map(m => {
+      const mismatchNote = m.wikidataGbifMismatch
+        ? ` — <span class="pill-warn">⚠ ${m.wikidataGbifMismatch.kind === 'wrong'
+            ? `GBIF says ${escapeHtml(m.wikidataGbifMismatch.expected)}, Wikidata says ${escapeHtml(m.wikidataGbifMismatch.actual)}`
+            : `missing parent (GBIF expects ${escapeHtml(m.wikidataGbifMismatch.expected)})`}</span>`
+        : '';
+      return `<li><em>${escapeHtml(m.name)}</em>${m.rank ? ` (${escapeHtml(m.rank)})` : ''}${mismatchNote}
+        ${m.inatId !== t.inatId ? `<button class="small-btn group-remove-btn" data-inat-id="${m.inatId}">remove</button>` : ' <span class="identity-note">(this taxon)</span>'}</li>`;
+    }).join('');
+    return `<div class="identity-panel taxon-action-panel">
+      <h3>Common name group — "${escapeHtml(group.title)}"</h3>
+      <p>Covers ${members.length} scientific name${members.length === 1 ? '' : 's'} under one shared article instead
+      of ${members.length === 1 ? 'its own' : 'one each'} — sturdier against splits, lumps, and renames than an
+      article tied to one exact scientific name.</p>
+      <ul>${rows}</ul>
+      <div class="stub-toolbar">
+        <button class="small-btn group-draft-btn" data-inat-id="${t.inatId}">Check coverage / draft group stub</button>
+        <button class="small-btn group-leave-btn" data-inat-id="${t.inatId}">Leave this group</button>
+      </div>
+      <div id="group-stub-actions-${t.inatId}"></div>
+    </div>`;
+  }
+
+  const candidates = suggestGroupCandidates(t);
+  const candidateRows = candidates.map(c => `<li><label>
+      <input type="checkbox" class="group-candidate-check" value="${c.t.inatId}"> <em>${escapeHtml(c.t.name)}</em> — ${escapeHtml(c.reason)}
+    </label></li>`).join('');
+  return `<div class="identity-panel taxon-action-panel">
+    <h3>Common name group</h3>
+    <p class="identity-note">One article per exact scientific name doesn't scale, and is fragile against how often
+    names and synonymy shift. Group this with other names under one shared common-name article instead — the
+    per-name stub above still works as-is when there's nothing to group with.</p>
+    ${candidates.length
+      ? `<p>Suggested from GBIF synonymy${t.commonName ? ' and shared common name' : ''} already checked above:</p><ul>${candidateRows}</ul>`
+      : '<p class="identity-note">No suggested matches among the taxa in this run — a group can still be started with just this one, or grown later from another taxon\'s own page.</p>'}
+    <div class="stub-toolbar">
+      <input type="text" id="group-title-${t.inatId}" class="group-title-input" placeholder="Common name for the shared article" value="${escapeHtml(t.commonName || '')}">
+      <button class="small-btn group-create-btn" data-inat-id="${t.inatId}">Create group</button>
+    </div>
+  </div>`;
+}
+
 // ---------- Bulk GBIF cross-check (opt-in) ----------
 // The per-taxon lookups above don't scale to hundreds of taxa one at a time, but batched
 // the same way the rest of the pipeline batches Wikidata — VALUES lists instead of one
@@ -2368,6 +2418,64 @@ ${taxonbar}
 <!-- RASCUNHO gerado a partir de dados do iNaturalist, GBIF e Wikidata — revise antes de publicar. Verifique se o modelo de esboço é o mais adequado. -->`;
 }
 
+// Group stubs don't get a per-language function each (buildStubEn/Es/Ja/Pt's pattern) —
+// there's no single taxon's rank/parent/authority to build a {{Speciesbox}}-style infobox
+// from, since the whole point is several scientific names sharing one article. A small
+// per-language phrase table instead, same style already used for DESCRIBED_BY_I18N above.
+const GROUP_INTRO_I18N = {
+  en: (title, count) => `'''${title}''' is a common name covering ${count} distinct scientific names.`,
+  es: (title, count) => `'''${title}''' es un nombre común que abarca ${count} nombres científicos distintos.`,
+  ja: (title, count) => `'''${title}'''は、${count}の異なる学名を包括する一般名である。`,
+  pt: (title, count) => `'''${title}''' é um nome comum que abrange ${count} nomes científicos distintos.`,
+};
+const GROUP_TAXONOMY_HEADING_I18N = { en: '==Taxonomy==', es: '==Taxonomía==', ja: '==分類==', pt: '==Taxonomia==' };
+const GROUP_REFERENCES_HEADING_I18N = { en: '==References==', es: '== Referencias ==', ja: '== 脚注 ==', pt: '== Referências ==' };
+// Reuses wikidataGbifMismatch exactly as computed by resolveGbifCrossCheck() — no new
+// discrepancy detection, just prose for the same disagreement the "no iNat ID"-style
+// badges already flag elsewhere in this tool.
+const GROUP_MISMATCH_I18N = {
+  en: (m) => m.kind === 'wrong'
+    ? ` Sources disagree on its placement: GBIF has it under ${m.expected}, Wikidata under ${m.actual}.`
+    : ` GBIF places it under ${m.expected}; Wikidata has no parent taxon recorded for it yet.`,
+  es: (m) => m.kind === 'wrong'
+    ? ` Las fuentes no coinciden: GBIF lo ubica en ${m.expected}, Wikidata en ${m.actual}.`
+    : ` GBIF lo ubica en ${m.expected}; Wikidata aún no tiene un taxón padre registrado.`,
+  ja: (m) => m.kind === 'wrong'
+    ? ` 出典間で分類が一致しない: GBIFでは${m.expected}、Wikidataでは${m.actual}とされている。`
+    : ` GBIFでは${m.expected}に分類されるが、Wikidataには親タクソンが未登録である。`,
+  pt: (m) => m.kind === 'wrong'
+    ? ` As fontes divergem: o GBIF classifica em ${m.expected}, o Wikidata em ${m.actual}.`
+    : ` O GBIF classifica em ${m.expected}; o Wikidata ainda não tem um táxon-pai registrado.`,
+};
+
+// group: { title, memberInatIds }. members: the resolved taxon objects for those ids
+// (looked up by the caller from currentTaxa, same as every other group-panel action).
+function buildGroupStub(group, members, lang, citation) {
+  const intro = (GROUP_INTRO_I18N[lang] || GROUP_INTRO_I18N.en)(group.title, members.length);
+  const heading = GROUP_TAXONOMY_HEADING_I18N[lang] || GROUP_TAXONOMY_HEADING_I18N.en;
+  const refHeading = GROUP_REFERENCES_HEADING_I18N[lang] || GROUP_REFERENCES_HEADING_I18N.en;
+  const mismatchFn = GROUP_MISMATCH_I18N[lang] || GROUP_MISMATCH_I18N.en;
+  const memberLines = members.map(m => {
+    const mismatchNote = m.wikidataGbifMismatch ? mismatchFn(m.wikidataGbifMismatch) : '';
+    return `* ''${m.name}''${m.rank ? ` (${m.rank})` : ''}.${mismatchNote}`;
+  }).join('\n');
+  const taxonbars = members.filter(m => m.wikidata).map(m => `{{Taxonbar|from=${m.wikidata.qid}}}`).join('\n');
+  // Same per-language stub-template convention already used inconsistently across
+  // buildStubEn/Es/Ja/Pt above (only en/pt actually tag one) — matched here, not
+  // invented fresh.
+  const stubTag = lang === 'en' ? '\n{{taxon-stub}}' : lang === 'pt' ? '\n{{esboço-biologia}}' : '';
+
+  return `${intro} ${leadCitationWikitext(lang, citation)}
+
+${heading}
+${memberLines}
+
+${refHeading}
+{{Reflist}}
+${taxonbars}${stubTag}
+<!-- DRAFT generated from iNaturalist + GBIF + Wikidata data for a curator-defined group of names — review before publishing. -->`;
+}
+
 // citation: optional {title, containerTitle, date, url} — a genuinely citable source
 // (e.g. a BHL literature record picked on the taxon curation page) to reference the lead
 // sentence with, instead of leaving it a {{citation needed}} marker.
@@ -2425,6 +2533,66 @@ function p1420Lines(synQid, acceptedQid, gbifId) {
     `${synQid}\tP1420\t${acceptedQid}\t${ref}`,
     `${acceptedQid}\tP1420\t${synQid}\t${ref}`,
   ];
+}
+
+// ---------- Common-name groups ----------
+// One article per exact scientific name doesn't scale, and is fragile against how often
+// names/synonymy shift — a split, lump, or rename can obsolete or duplicate a narrowly
+// scoped article. This lets a curator group several scientific names under one article
+// titled by a shared common name instead, falling back to the usual per-name stub above
+// when there's nothing to group with. Deliberately curator-decided, not an automatic
+// rule — suggestGroupCandidates() below only ever *suggests*, from data already computed
+// elsewhere (GBIF synonymy, shared common names), never groups on its own.
+let commonNameGroups = []; // [{ title, memberInatIds: [...] }]
+
+function findGroupForTaxon(t) {
+  return commonNameGroups.find(g => g.memberInatIds.includes(t.inatId)) || null;
+}
+
+// Reads data already computed by buildSynonymyInfo()/resolveGbifCrossCheck() —
+// t._synonymNames (GBIF's synonym list for t's accepted usage) and shared t.commonName —
+// no new network calls. A taxon already claimed by another group isn't suggested again:
+// membership is exclusive, one group at a time, enforced in addTaxonToGroup() below.
+function suggestGroupCandidates(t) {
+  const synonymNames = new Set(t._synonymNames || []);
+  const candidates = [];
+  for (const other of currentTaxa) {
+    if (other.inatId === t.inatId) continue;
+    if (findGroupForTaxon(other)) continue;
+    let reason = null;
+    if (synonymNames.has(other.name) || (other._synonymNames || []).includes(t.name)) {
+      reason = 'GBIF lists these as synonyms of each other';
+    } else if (t.commonName && other.commonName && t.commonName.toLowerCase() === other.commonName.toLowerCase()) {
+      reason = 'same common name on iNaturalist';
+    }
+    if (reason) candidates.push({ t: other, reason });
+  }
+  return candidates;
+}
+
+function createGroup(title, memberInatIds) {
+  const group = { title, memberInatIds: [...new Set(memberInatIds)] };
+  commonNameGroups.push(group);
+  return group;
+}
+
+// A taxon can only belong to one group — added to a new one, it's silently dropped from
+// whichever it was in before, same "exclusive membership" reasoning suggestGroupCandidates
+// already relies on. Empty groups (every member removed) are dropped, not kept as clutter.
+function addTaxonToGroup(group, t) {
+  const existing = findGroupForTaxon(t);
+  if (existing && existing !== group) {
+    existing.memberInatIds = existing.memberInatIds.filter(id => id !== t.inatId);
+  }
+  if (!group.memberInatIds.includes(t.inatId)) group.memberInatIds.push(t.inatId);
+  commonNameGroups = commonNameGroups.filter(g => g.memberInatIds.length > 0);
+}
+
+function removeTaxonFromGroup(t) {
+  const group = findGroupForTaxon(t);
+  if (!group) return;
+  group.memberInatIds = group.memberInatIds.filter(id => id !== t.inatId);
+  commonNameGroups = commonNameGroups.filter(g => g.memberInatIds.length > 0);
 }
 
 async function fetchGbifMatch(name) {
@@ -3209,6 +3377,21 @@ function inatWikipediaLangMatch(t, code) {
   catch (e) { return false; }
 }
 
+// A common-name group has no single Wikidata item to read sitelinks from (that's the
+// whole point — several scientific names share one) — so "already covered" for a group
+// has to ask each Wikipedia directly, by the common-name title itself, live and
+// on-demand (there's no batch-friendly way to do this across many titles at once the way
+// resolveSitelinks() does for individual taxa, and groups are curator-created one at a
+// time anyway, not part of the automatic pipeline).
+async function checkWikipediaTitleExists(lang, title) {
+  const url = `https://${lang}.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(title)}&format=json&formatversion=2&origin=*`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${lang}.wikipedia.org API HTTP ${res.status}`);
+  const json = await res.json();
+  const page = json.query && json.query.pages && json.query.pages[0];
+  return !!(page && !page.missing);
+}
+
 function taxonMissingCount(t) {
   if (!t.wikidata || !t.wikipedia) return null;
   return LANGS.filter(l => !t.wikipedia[l.code] && !inatWikipediaLangMatch(t, l.code)).length;
@@ -3595,6 +3778,11 @@ async function renderTaxonDetail(t) {
     if (panel) panels.push(panel);
   } catch (e) { /* informational only */ }
 
+  // No network call of its own — reads t._synonymNames/t.commonName, already computed
+  // above — so unlike everything else on this page it's fine to build synchronously and
+  // unconditionally, regardless of what happened with Wikidata/synonymy.
+  panels.push(commonNameGroupPanel(t));
+
   // Taxonomic tree — same "attempted regardless, degrades silently" treatment as
   // synonymy/homonymy above; needs ctx (iNaturalist's ancestor chain via ensureStubContext),
   // so nothing to show if that failed.
@@ -3712,6 +3900,105 @@ document.addEventListener('click', async (e) => {
   if (!t) return;
   t._selectedImage = pickBtn ? pickBtn.dataset.filename : null;
   await renderTaxonDetail(t);
+});
+
+document.addEventListener('click', async (e) => {
+  const createBtn = e.target.closest('.group-create-btn');
+  if (!createBtn) return;
+  const inatId = Number(createBtn.dataset.inatId);
+  const t = currentTaxa.find(x => x.inatId === inatId);
+  if (!t) return;
+  const titleInput = document.getElementById(`group-title-${inatId}`);
+  const title = (titleInput ? titleInput.value : '').trim();
+  if (!title) { titleInput.focus(); return; }
+  const checkedIds = [...document.querySelectorAll('.group-candidate-check:checked')].map(cb => Number(cb.value));
+  const group = createGroup(title, [inatId, ...checkedIds]);
+  for (const id of checkedIds) {
+    const member = currentTaxa.find(x => x.inatId === id);
+    if (member) addTaxonToGroup(group, member);
+  }
+  saveCurrentRun();
+  await renderTaxonDetail(t);
+});
+
+document.addEventListener('click', async (e) => {
+  const leaveBtn = e.target.closest('.group-leave-btn');
+  if (!leaveBtn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(leaveBtn.dataset.inatId));
+  if (!t) return;
+  removeTaxonFromGroup(t);
+  saveCurrentRun();
+  await renderTaxonDetail(t);
+});
+
+document.addEventListener('click', async (e) => {
+  const removeBtn = e.target.closest('.group-remove-btn');
+  if (!removeBtn) return;
+  const removed = currentTaxa.find(x => x.inatId === Number(removeBtn.dataset.inatId));
+  // The panel is rendered for the CURRENT curation-page taxon, not necessarily the
+  // member being removed — re-render that one, not the one just kicked out of the group.
+  const current = findCurrentDetailTaxon();
+  if (removed) removeTaxonFromGroup(removed);
+  saveCurrentRun();
+  if (current) await renderTaxonDetail(current);
+});
+
+// The curation page's URL hash is the one reliable way to know which taxon's page is
+// currently open — click targets inside its panels only carry the id of whatever THEY
+// act on (a group member being removed, say), not necessarily the page's own taxon.
+function findCurrentDetailTaxon() {
+  const m = location.hash.match(/^#taxon=(\d+)$/);
+  return m ? currentTaxa.find(x => x.inatId === Number(m[1])) : null;
+}
+
+document.addEventListener('click', async (e) => {
+  const draftBtn = e.target.closest('.group-draft-btn');
+  if (!draftBtn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(draftBtn.dataset.inatId));
+  const group = t && findGroupForTaxon(t);
+  const container = document.getElementById(`group-stub-actions-${draftBtn.dataset.inatId}`);
+  if (!t || !group || !container) return;
+  const members = group.memberInatIds.map(id => currentTaxa.find(x => x.inatId === id)).filter(Boolean);
+
+  const originalText = draftBtn.textContent;
+  draftBtn.disabled = true;
+  draftBtn.textContent = 'Checking…';
+  container.innerHTML = '';
+  try {
+    const results = await Promise.all(LANGS.map(async (l) => {
+      try {
+        const exists = await checkWikipediaTitleExists(l.code, group.title);
+        return { lang: l.code, exists };
+      } catch (err) {
+        return { lang: l.code, error: err.message };
+      }
+    }));
+    container.innerHTML = results.map(r => {
+      if (r.error) {
+        return `<p class="identity-note">${r.lang}: could not check (${escapeHtml(r.error)}).</p>`;
+      }
+      if (r.exists) {
+        return `<p class="identity-note">${r.lang}: "<a href="https://${r.lang}.wikipedia.org/wiki/${encodeURIComponent(group.title)}" target="_blank" rel="noopener">${escapeHtml(group.title)}</a>" already exists.</p>`;
+      }
+      const wikitext = buildGroupStub(group, members, r.lang);
+      const id = `group-stub-${draftBtn.dataset.inatId}-${r.lang}-${taxonActionPanelSeq++}`;
+      return `<div class="identity-panel taxon-action-panel">
+        <h3>Wikipedia (${r.lang}) — "${escapeHtml(group.title)}" — no article</h3>
+        <div>
+          <a class="small-btn" href="${editUrl(r.lang, group.title)}" target="_blank" rel="noopener">Open ${r.lang}.wikipedia.org editor ↗</a>
+        </div>
+        <div class="stub-toolbar">
+          <button class="small-btn copy-stub-btn" data-target="${id}">Copy</button>
+        </div>
+        <textarea id="${id}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = `<p class="identity-note">Could not check coverage: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    draftBtn.disabled = false;
+    draftBtn.textContent = originalText;
+  }
 });
 
 // A Wikipedia stub panel gets its own renderer (rather than going through
@@ -5046,6 +5333,9 @@ function saveCurrentRun() {
       scopeType, scopeValue, osmRadiusKm,
       gbifCrossCheckDone, articleQualityChecked,
       taxa: currentTaxa.map(stripEphemeralFields),
+      // Group membership is a curator decision, not a re-fetchable cache — unlike the
+      // `_`-prefixed fields stripEphemeralFields() drops, this has to survive a resume.
+      commonNameGroups,
     };
     localStorage.setItem(runCacheKey(scopeType, scopeValue, osmRadiusKm), JSON.stringify(payload));
   } catch (e) {
@@ -5094,6 +5384,9 @@ function applyLoadedRun(saved) {
   currentTaxa = saved.taxa;
   gbifCrossCheckDone = !!saved.gbifCrossCheckDone;
   articleQualityChecked = !!saved.articleQualityChecked;
+  // Missing on a save from before this feature existed — same "absent reads as none
+  // yet" convention as everything else restored here, no migration needed.
+  commonNameGroups = Array.isArray(saved.commonNameGroups) ? saved.commonNameGroups : [];
   currentRunScope = { scopeType: saved.scopeType, scopeValue: saved.scopeValue, osmRadiusKm: saved.osmRadiusKm };
   setStatusHeader(`Done — ${currentTaxa.length} taxa loaded (resumed from a saved run, ${relativeTime(saved.savedAt)}).`);
   updateStats();
@@ -5127,6 +5420,7 @@ function resetRunUI() {
   identityState = null;
   currentTaxa = [];
   currentRunScope = null;
+  commonNameGroups = [];
   resumePromptEl.hidden = true;
   if (location.hash) location.hash = ''; // a fresh search always starts on the table, not a stale taxon page
 }
