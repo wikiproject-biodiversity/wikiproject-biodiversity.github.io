@@ -489,6 +489,11 @@ a.taxon-name:hover { color: var(--link); text-decoration: underline; }
 .bhl-row ul { margin: 6px 0 0; padding-left: 18px; }
 
 .stub-toolbar { margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.group-title-input {
+  font-size: 0.9rem; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); min-width: 220px;
+}
 .stub-toolbar-hint { font-size: 0.78rem; color: var(--text-dim); margin: 4px 0 8px; }
 
 .bhl-citation-label {
