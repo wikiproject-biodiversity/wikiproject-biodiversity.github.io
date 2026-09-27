@@ -350,6 +350,7 @@ async function fetchScopedTaxa(scopeType, scopeValue, onProgress, osmRadiusKm) {
         observerLogin: obs.user ? obs.user.login : '',
         obsUri: obs.uri,
         inatPhotoUrl: `https://www.inaturalist.org/photos/${p.id}`,
+        qualityGrade: obs.quality_grade || null, // "research" / "needs_id" / "casual"
       };
     }
   }
@@ -1838,9 +1839,11 @@ function commonNameGroupPanel(t) {
       <ul>${rows}</ul>
       <div class="stub-toolbar">
         <button class="small-btn group-draft-btn" data-inat-id="${t.inatId}">Check coverage / draft group stub</button>
+        <button class="small-btn group-diagram-btn" data-inat-id="${t.inatId}">Prepare taxonomic diagram</button>
         <button class="small-btn group-leave-btn" data-inat-id="${t.inatId}">Leave this group</button>
       </div>
       <div id="group-stub-actions-${t.inatId}"></div>
+      <div id="group-diagram-actions-${t.inatId}"></div>
     </div>`;
   }
 
@@ -2117,8 +2120,16 @@ function commonsImageFilename(t) {
   // A curator's explicit pick (from the curation page's image selector, sourced from
   // images already on Wikidata/Commons for this taxon) wins over this run's own
   // observation photo — that photo may not even be uploaded yet, while a selected image
-  // is already live and license-cleared.
+  // is already live and license-cleared. Not subject to the Research-Grade restriction
+  // below: it isn't tied to any one observation's grade at all, it's already a real,
+  // existing Commons file the curator picked on its own merits.
   if (t._selectedImage) return t._selectedImage;
+  // An observation-sourced photo only counts here once it's Research Grade — same policy
+  // as the upload button itself (isResearchGrade's own comment): this function feeds both
+  // "prepare upload" and the P18-add proposal, and a non-RG photo shouldn't reach either,
+  // even indirectly via a stale-but-already-uploaded commonsFile from before this taxon's
+  // grade was (re)checked.
+  if (!isResearchGrade(t.obsPhoto)) return '';
   const pageUrl = t.obsPhoto && t.obsPhoto.commonsFile && t.obsPhoto.commonsFile.pageUrl;
   return pageUrl ? decodeURIComponent(pageUrl.split('File:').pop()) : '';
 }
@@ -2474,6 +2485,94 @@ ${refHeading}
 {{Reflist}}
 ${taxonbars}${stubTag}
 <!-- DRAFT generated from iNaturalist + GBIF + Wikidata data for a curator-defined group of names — review before publishing. -->`;
+}
+
+// Hand-rolled — no charting/graph library, same zero-dependency, no-build-step design as
+// the rest of this tool. One row per member; a member GBIF and Wikidata disagree about
+// gets two diverging, differently-coloured branches (one per source's own placement)
+// instead of one line, so the disagreement is the visual point, not a footnote. This
+// can't be pushed to Commons automatically — buildCommonsUploadUrl() only works because
+// the source file already has a stable external URL Commons fetches itself, and a
+// freshly generated SVG has no such URL (this tool has no backend/OAuth to upload one
+// directly, a deliberate design choice throughout) — so this is offered as a download
+// plus prepared wikitext for the curator to upload themselves, same posture as every
+// other Commons interaction here.
+function buildGroupDivergenceSvg(group, members) {
+  const rowHeight = 60;
+  const topPad = 36;
+  const width = 820;
+  const leftX = 24, rootW = 190, rootH = 46;
+  const memberX = 260, memberW = 210, memberH = 32;
+  const branchX = memberX + memberW + 36, branchW = 260, branchH = 26;
+  const height = topPad * 2 + Math.max(1, members.length) * rowHeight;
+  const rootY = height / 2;
+  const esc = escapeHtml;
+
+  const parts = [];
+  parts.push(`<rect x="${leftX}" y="${rootY - rootH / 2}" width="${rootW}" height="${rootH}" rx="8" fill="#2f6f4f"/>`);
+  parts.push(`<text x="${leftX + rootW / 2}" y="${rootY}" text-anchor="middle" dominant-baseline="middle" fill="#ffffff" font-size="15" font-weight="600">${esc(group.title)}</text>`);
+
+  members.forEach((m, i) => {
+    const y = topPad + i * rowHeight + rowHeight / 2;
+    const midX = (leftX + rootW + memberX) / 2;
+    parts.push(`<path d="M ${leftX + rootW} ${rootY} C ${midX} ${rootY}, ${midX} ${y}, ${memberX} ${y}" fill="none" stroke="#999999" stroke-width="1.5"/>`);
+    parts.push(`<rect x="${memberX}" y="${y - memberH / 2}" width="${memberW}" height="${memberH}" rx="6" fill="#ffffff" stroke="#666666"/>`);
+    parts.push(`<text x="${memberX + memberW / 2}" y="${y}" text-anchor="middle" dominant-baseline="middle" font-size="12" font-style="italic">${esc(m.name)}</text>`);
+
+    const mm = m.wikidataGbifMismatch;
+    if (mm) {
+      const y1 = y - 11, y2 = y + 11;
+      const gbifLabel = `GBIF: ${mm.expected}`;
+      const wdLabel = mm.kind === 'wrong' ? `Wikidata: ${mm.actual}` : 'Wikidata: no parent recorded';
+      parts.push(`<path d="M ${memberX + memberW} ${y} L ${branchX} ${y1}" fill="none" stroke="#1a5fa8" stroke-width="1.5"/>`);
+      parts.push(`<rect x="${branchX}" y="${y1 - branchH / 2}" width="${branchW}" height="${branchH}" rx="5" fill="#e6f0fa" stroke="#1a5fa8"/>`);
+      parts.push(`<text x="${branchX + 8}" y="${y1}" dominant-baseline="middle" font-size="11" fill="#1a5fa8">${esc(gbifLabel)}</text>`);
+      parts.push(`<path d="M ${memberX + memberW} ${y} L ${branchX} ${y2}" fill="none" stroke="#a3282c" stroke-width="1.5" stroke-dasharray="4 2"/>`);
+      parts.push(`<rect x="${branchX}" y="${y2 - branchH / 2}" width="${branchW}" height="${branchH}" rx="5" fill="#fde8e8" stroke="#a3282c"/>`);
+      parts.push(`<text x="${branchX + 8}" y="${y2}" dominant-baseline="middle" font-size="11" fill="#a3282c">${esc(wdLabel)}</text>`);
+    } else {
+      parts.push(`<path d="M ${memberX + memberW} ${y} L ${branchX} ${y}" fill="none" stroke="#2f6f4f" stroke-width="1.5"/>`);
+      parts.push(`<text x="${branchX + 8}" y="${y}" dominant-baseline="middle" font-size="11" fill="#2f6f4f">GBIF and Wikidata agree</text>`);
+    }
+  });
+
+  const legendY = height - 12;
+  parts.push(`<text x="${leftX}" y="${legendY}" font-size="10" fill="#666666">Solid blue = GBIF's placement · dashed red = Wikidata's placement, where they disagree</text>`);
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" font-family="sans-serif" role="img">
+<title>Taxonomic classification for ${esc(group.title)}</title>
+<rect width="${width}" height="${height}" fill="#ffffff"/>
+${parts.join('\n')}
+</svg>`;
+}
+
+function suggestedGroupDiagramFilename(group) {
+  const safe = group.title.replace(/[\[\]{}|#<>]/g, '').trim();
+  return `${safe} - taxonomic classification.svg`;
+}
+
+// Same {{Information}} shape as buildCommonsWikitext() for an observation photo, but
+// there's no photographer/license to read off an iNaturalist record here — this is a
+// diagram this tool generated from data the curator has already reviewed (GBIF, Wikidata,
+// via the group panel), so license/author are left for the curator to fill in rather than
+// presumed on their behalf, same restraint buildCommonsWikitext already shows for
+// `| permission = `.
+function buildGroupDiagramCommonsWikitext(group, members) {
+  const memberList = members.map(m => m.name).join(', ');
+  return `=={{int:filedesc}}==
+{{Information
+| description = {{en|1=Taxonomic classification diagram for the common name "${group.title}", covering: ${memberList}. Generated from iNaturalist, GBIF, and Wikidata data by the [https://wikiproject-biodiversity.github.io/inat-wikidata-dashboard/ iNaturalist × Wikidata dashboard].}}
+| date        = ${todayISO()}
+| source      = {{own}}
+| author      =
+| permission  =
+| other versions =
+}}
+
+=={{int:license-header}}==
+
+[[Category:${group.title}]]
+<!-- DRAFT — fill in author/license before uploading. Not uploaded automatically: this tool has no Commons upload credentials, only "upload by URL" for a file that already has a stable external source, which a generated diagram doesn't have. -->`;
 }
 
 // citation: optional {title, containerTitle, date, url} — a genuinely citable source
@@ -3554,20 +3653,50 @@ function photographerCredit(p) {
   return `<a class="photo-credit" href="https://www.inaturalist.org/people/${encodeURIComponent(p.observerLogin)}" target="_blank" rel="noopener">${escapeHtml(p.observerLogin)}</a>`;
 }
 
+// iNaturalist's own vetting tier for the observation this photo came from — "research
+// grade" (community-confirmed ID) carries a lot more weight than "casual" (no location,
+// no date, or a captive/cultivated organism) when a curator is deciding whether to trust
+// a photo/ID enough to draft a stub or prepare a Commons upload from it. Same pill style
+// as the license/Commons status next to it, colored the same way iNaturalist's own UI
+// does (green/amber/grey).
+const QUALITY_GRADE_LABELS = { research: 'Research Grade', needs_id: 'Needs ID', casual: 'Casual' };
+const QUALITY_GRADE_CLASS = { research: 'pill-ok', needs_id: 'pill-warn', casual: '' };
+function qualityGradeBadge(grade) {
+  if (!grade) return '';
+  const label = QUALITY_GRADE_LABELS[grade] || grade;
+  const cls = QUALITY_GRADE_CLASS[grade] || '';
+  return ` <span class="pill ${cls}" title="iNaturalist quality grade for this observation">${escapeHtml(label)}</span>`;
+}
+
+// Casual and Needs ID observations haven't been through iNaturalist's own community
+// vetting — no confirmed location/date, or the ID itself isn't community-agreed yet — so
+// an image tied to one is exactly the kind of thing that later turns out misidentified or
+// otherwise unusable, after it's already on Commons and (worse) already asserted as P18
+// on a Wikidata item. Restricting the upload/link flows to Research Grade only is a
+// deliberate policy, not a technical default — a curator who's personally verified a
+// non-RG photo still has "Copy file-page wikitext" as a manual fallback (below), just not
+// the one-click affordances.
+function isResearchGrade(p) {
+  return !!p && p.qualityGrade === 'research';
+}
+
 function renderImageCell(t) {
   const p = t.obsPhoto;
   if (!p) return '<span class="pill">no photo</span>';
   const thumb = `<img class="thumb" src="${p.squareUrl}" alt="" title="Photo from an observation in this run — this is what a Commons upload below would use">`;
+  const qualityBadge = qualityGradeBadge(p.qualityGrade);
   let status;
   if (!COMMONS_COMPATIBLE_LICENSES[p.licenseCode]) {
     const label = p.licenseCode ? p.licenseCode.toUpperCase() : 'all rights reserved';
     status = `<span class="pill" title="Not Commons-compatible (needs CC0 / CC BY / CC BY-SA)">${label}</span>`;
   } else if (p.commonsFile) {
     status = `<a class="pill pill-ok" href="${p.commonsFile.pageUrl}" target="_blank" rel="noopener">on Commons ✓</a>`;
+  } else if (!isResearchGrade(p)) {
+    status = `<span class="pill" title="Only Research Grade observations are offered for upload — this one is ${escapeHtml(QUALITY_GRADE_LABELS[p.qualityGrade] || p.qualityGrade || 'ungraded')}">upload restricted to RG</span>`;
   } else {
     status = `<button class="small-btn commons-btn" data-inat-id="${t.inatId}">prepare upload</button>`;
   }
-  return `<div class="image-cell">${thumb}${photographerCredit(p)}${status}</div>`;
+  return `<div class="image-cell">${thumb}${photographerCredit(p)}${qualityBadge}${status}</div>`;
 }
 
 function renderTable() {
@@ -3999,6 +4128,67 @@ document.addEventListener('click', async (e) => {
     draftBtn.disabled = false;
     draftBtn.textContent = originalText;
   }
+});
+
+// Keyed lookup for the download button below rather than round-tripping the SVG through
+// a hidden <textarea> — a curator-typed group title is free text with none of the
+// nomenclatural constraints a scientific name has, so it's not worth trusting it not to
+// contain something like a literal "</textarea>". The SVG's own <text> content is already
+// escaped inside buildGroupDivergenceSvg(); this side-steps re-serializing it through the
+// DOM a second time just to hand it to the download button.
+const groupDiagramSvgCache = new Map();
+
+document.addEventListener('click', (e) => {
+  const diagramBtn = e.target.closest('.group-diagram-btn');
+  if (!diagramBtn) return;
+  const t = currentTaxa.find(x => x.inatId === Number(diagramBtn.dataset.inatId));
+  const group = t && findGroupForTaxon(t);
+  const container = document.getElementById(`group-diagram-actions-${diagramBtn.dataset.inatId}`);
+  if (!t || !group || !container) return;
+  const members = group.memberInatIds.map(id => currentTaxa.find(x => x.inatId === id)).filter(Boolean);
+
+  const svg = buildGroupDivergenceSvg(group, members);
+  const wikitext = buildGroupDiagramCommonsWikitext(group, members);
+  const filename = suggestedGroupDiagramFilename(group);
+  const svgId = `group-diagram-svg-${diagramBtn.dataset.inatId}-${taxonActionPanelSeq++}`;
+  const wikitextId = `group-diagram-wikitext-${diagramBtn.dataset.inatId}-${taxonActionPanelSeq++}`;
+  groupDiagramSvgCache.set(svgId, svg);
+  const mismatchCount = members.filter(m => m.wikidataGbifMismatch).length;
+
+  container.innerHTML = `<div class="identity-panel taxon-action-panel">
+    <h3>Taxonomic classification diagram — "${escapeHtml(group.title)}"</h3>
+    <p class="identity-note">${mismatchCount
+      ? `Highlights ${mismatchCount} member${mismatchCount === 1 ? '' : 's'} where GBIF and Wikidata disagree on placement.`
+      : "No classification disagreements among this group's members right now — still a useful diagram of the group itself."}</p>
+    <div class="group-diagram-preview">${svg}</div>
+    <p class="identity-note">This tool can't upload to Commons automatically — no backend, no OAuth, and (unlike an
+      iNaturalist photo) a freshly generated diagram has no existing external URL for Commons to fetch by itself.
+      Download the SVG, then upload it yourself via
+      <a href="https://commons.wikimedia.org/wiki/Special:UploadWizard" target="_blank" rel="noopener">Commons' Upload Wizard</a>,
+      pasting the description below (fill in author/license first — this tool doesn't presume one on your behalf).</p>
+    <div class="stub-toolbar">
+      <button class="small-btn group-diagram-download-btn" data-svg-id="${svgId}" data-filename="${escapeHtml(filename)}">Download SVG</button>
+      <button class="small-btn copy-stub-btn" data-target="${wikitextId}">Copy file description</button>
+      <a class="small-btn" href="https://commons.wikimedia.org/wiki/Special:UploadWizard" target="_blank" rel="noopener">Open Upload Wizard ↗</a>
+    </div>
+    <textarea id="${wikitextId}" class="stub-textarea" readonly spellcheck="false">${wikitext}</textarea>
+  </div>`;
+});
+
+document.addEventListener('click', (e) => {
+  const downloadBtn = e.target.closest('.group-diagram-download-btn');
+  if (!downloadBtn) return;
+  const svg = groupDiagramSvgCache.get(downloadBtn.dataset.svgId);
+  if (!svg) return;
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = downloadBtn.dataset.filename || 'diagram.svg';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 });
 
 // A Wikipedia stub panel gets its own renderer (rather than going through
@@ -4683,7 +4873,9 @@ document.addEventListener('click', (e) => {
   if (!btn) return;
   const inatId = Number(btn.dataset.inatId);
   const t = currentTaxa.find(x => x.inatId === inatId);
-  if (!t || !t.obsPhoto) return;
+  // Policy, not just a UI nicety (see isResearchGrade's own comment) — checked again
+  // here, not just in whether the button was rendered, in case the DOM is stale.
+  if (!t || !t.obsPhoto || !isResearchGrade(t.obsPhoto)) return;
 
   const row = btn.closest('tr');
   const uploadRow = row.nextElementSibling;
